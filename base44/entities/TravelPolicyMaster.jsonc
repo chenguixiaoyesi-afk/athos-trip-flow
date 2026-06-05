@@ -1,0 +1,77 @@
+{
+  "name": "TravelPolicyMaster",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "\u898f\u7a0b\u30d0\u30fc\u30b8\u30e7\u30f3\uff08\u4f8b\uff1a\u7b2c4\u7248\uff09"
+    },
+    "effective_date": {
+      "type": "string",
+      "format": "date",
+      "description": "\u65bd\u884c\u65e5"
+    },
+    "policy_content": {
+      "type": "string",
+      "description": "\u898f\u7a0b\u5185\u5bb9\uff08\u30c6\u30ad\u30b9\u30c8\uff09"
+    },
+    "pdf_url": {
+      "type": "string",
+      "description": "PDF\u30d5\u30a1\u30a4\u30ebURL"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": false,
+      "description": "\u6709\u52b9\u30d5\u30e9\u30b0"
+    },
+    "min_distance_km": {
+      "type": "number",
+      "default": 50,
+      "description": "\u51fa\u5f35\u57fa\u6e96\u8ddd\u96e2\uff08km\uff09"
+    },
+    "daily_allowance_daytrip": {
+      "type": "number",
+      "default": 5000,
+      "description": "\u65e5\u5e30\u308a\u51fa\u5f35\u65e5\u5f53\uff08\u5186\uff09"
+    },
+    "daily_allowance_overnight": {
+      "type": "number",
+      "default": 5000,
+      "description": "\u5bbf\u6cca\u51fa\u5f35\u65e5\u5f53\uff08\u5186/\u65e5\uff09"
+    },
+    "daily_allowance_overseas": {
+      "type": "number",
+      "default": 10000,
+      "description": "\u6d77\u5916\u51fa\u5f35\u65e5\u5f53\uff08\u5186/\u65e5\uff09"
+    },
+    "accommodation_domestic": {
+      "type": "number",
+      "default": 15000,
+      "description": "\u56fd\u5185\u5bbf\u6cca\u8cbb\uff08\u5186/\u6cca\uff09"
+    },
+    "accommodation_overseas": {
+      "type": "number",
+      "default": 20000,
+      "description": "\u6d77\u5916\u5bbf\u6cca\u8cbb\uff08\u5186/\u6cca\uff09"
+    },
+    "car_allowance_per_km": {
+      "type": "number",
+      "default": 30,
+      "description": "\u8d70\u884c\u8ddd\u96e2\u5358\u4fa1\uff08\u5186/km\uff09"
+    },
+    "max_work_expense": {
+      "type": "number",
+      "default": 5000,
+      "description": "\u5916\u51fa\u4f5c\u696d\u8cbb\u4e0a\u9650\uff08\u5186/\u65e5\uff09"
+    },
+    "min_work_hours": {
+      "type": "number",
+      "default": 4,
+      "description": "\u5916\u51fa\u4f5c\u696d\u6642\u9593\u8981\u4ef6\uff08\u6642\u9593\uff09"
+    }
+  },
+  "required": [
+    "version",
+    "effective_date"
+  ]
+}

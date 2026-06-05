@@ -1,0 +1,214 @@
+{
+  "name": "Report",
+  "type": "object",
+  "properties": {
+    "report_number": {
+      "type": "string",
+      "description": "\u30ec\u30dd\u30fc\u30c8ID\uff08\u81ea\u52d5\u63a1\u756a\uff09"
+    },
+    "created_by_name": {
+      "type": "string",
+      "description": "\u4f5c\u6210\u8005\u540d"
+    },
+    "created_by_email": {
+      "type": "string",
+      "description": "\u4f5c\u6210\u8005\u30e1\u30fc\u30eb"
+    },
+    "report_type": {
+      "type": "string",
+      "enum": [
+        "\u65e5\u5e30\u308a\u51fa\u5f35",
+        "\u5bbf\u6cca\u51fa\u5f35",
+        "\u6d77\u5916\u51fa\u5f35",
+        "\u5916\u51fa\u4f5c\u696d"
+      ],
+      "description": "\u30ec\u30dd\u30fc\u30c8\u7a2e\u5225"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "\u4e0b\u66f8\u304d",
+        "\u7533\u8acb\u4e2d",
+        "\u627f\u8a8d\u6e08",
+        "\u5dee\u623b\u3057"
+      ],
+      "default": "\u4e0b\u66f8\u304d",
+      "description": "\u30b9\u30c6\u30fc\u30bf\u30b9"
+    },
+    "approver_name": {
+      "type": "string",
+      "description": "\u627f\u8a8d\u8005\u540d"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date",
+      "description": "\u627f\u8a8d\u65e5"
+    },
+    "rejection_reason": {
+      "type": "string",
+      "description": "\u5dee\u623b\u3057\u7406\u7531"
+    },
+    "travel_date": {
+      "type": "string",
+      "format": "date",
+      "description": "\u51fa\u5f35\u65e5\uff08\u65e5\u5e30\u308a\uff09"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date",
+      "description": "\u958b\u59cb\u65e5"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date",
+      "description": "\u7d42\u4e86\u65e5"
+    },
+    "destination_name": {
+      "type": "string",
+      "description": "\u76ee\u7684\u5730\u65bd\u8a2d\u540d"
+    },
+    "destination_address": {
+      "type": "string",
+      "description": "\u76ee\u7684\u5730\u6240\u5728\u5730"
+    },
+    "one_way_distance_km": {
+      "type": "number",
+      "description": "\u7247\u9053\u8ddd\u96e2\uff08km\uff09"
+    },
+    "num_nights": {
+      "type": "number",
+      "description": "\u5bbf\u6cca\u6570"
+    },
+    "num_days": {
+      "type": "number",
+      "description": "\u65e5\u6570"
+    },
+    "business_content": {
+      "type": "string",
+      "description": "\u696d\u52d9\u5185\u5bb9"
+    },
+    "transport_methods": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "\u4ea4\u901a\u624b\u6bb5"
+    },
+    "driving_distance_km": {
+      "type": "number",
+      "description": "\u8d70\u884c\u8ddd\u96e2\uff08km\uff09"
+    },
+    "highway_fee": {
+      "type": "number",
+      "description": "\u9ad8\u901f\u9053\u8def\u6599\u91d1",
+      "default": 0
+    },
+    "parking_fee": {
+      "type": "number",
+      "description": "\u99d0\u8eca\u5834\u6599\u91d1",
+      "default": 0
+    },
+    "taxi_fee": {
+      "type": "number",
+      "description": "\u30bf\u30af\u30b7\u30fc\u6599\u91d1",
+      "default": 0
+    },
+    "other_transport_fee": {
+      "type": "number",
+      "description": "\u305d\u306e\u4ed6\u4ea4\u901a\u8cbb",
+      "default": 0
+    },
+    "shinkansen_reason": {
+      "type": "string",
+      "description": "\u65b0\u5e79\u7dda\u6307\u5b9a\u5e2d\u30fb\u30b0\u30ea\u30fc\u30f3\u8eca\u5229\u7528\u7406\u7531"
+    },
+    "flight_fee": {
+      "type": "number",
+      "description": "\u822a\u7a7a\u5238\u4ee3",
+      "default": 0
+    },
+    "airport_transport_fee": {
+      "type": "number",
+      "description": "\u7a7a\u6e2f\u307e\u3067\u306e\u4ea4\u901a\u8cbb",
+      "default": 0
+    },
+    "country_name": {
+      "type": "string",
+      "description": "\u6e21\u822a\u5148\u56fd\u540d"
+    },
+    "city_name": {
+      "type": "string",
+      "description": "\u6e21\u822a\u5148\u90fd\u5e02\u540d"
+    },
+    "work_start_time": {
+      "type": "string",
+      "description": "\u4f5c\u696d\u958b\u59cb\u6642\u523b"
+    },
+    "work_end_time": {
+      "type": "string",
+      "description": "\u4f5c\u696d\u7d42\u4e86\u6642\u523b"
+    },
+    "coworking_fee": {
+      "type": "number",
+      "description": "\u30b3\u30ef\u30fc\u30ad\u30f3\u30b0\u30b9\u30da\u30fc\u30b9/\u8cb8\u4f1a\u8b70\u5ba4\u5229\u7528\u6599",
+      "default": 0
+    },
+    "wifi_fee": {
+      "type": "number",
+      "description": "Wi-Fi/\u901a\u4fe1\u8cbb",
+      "default": 0
+    },
+    "meal_fee": {
+      "type": "number",
+      "description": "\u98f2\u98df\u4ee3",
+      "default": 0
+    },
+    "other_work_fee": {
+      "type": "number",
+      "description": "\u305d\u306e\u4ed6\u696d\u52d9\u95a2\u9023\u8cbb\u7528",
+      "default": 0
+    },
+    "receipt_urls": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "\u9818\u53ce\u66f8\u753b\u50cfURL\u4e00\u89a7"
+    },
+    "remarks": {
+      "type": "string",
+      "description": "\u5099\u8003"
+    },
+    "daily_allowance": {
+      "type": "number",
+      "description": "\u65e5\u5f53"
+    },
+    "accommodation_fee": {
+      "type": "number",
+      "description": "\u5bbf\u6cca\u8cbb"
+    },
+    "car_allowance": {
+      "type": "number",
+      "description": "\u30de\u30a4\u30ab\u30fc\u624b\u5f53"
+    },
+    "total_work_expense": {
+      "type": "number",
+      "description": "\u5916\u51fa\u4f5c\u696d\u8cbb\u5408\u8a08"
+    },
+    "total_amount": {
+      "type": "number",
+      "description": "\u5408\u8a08\u652f\u7d66\u984d"
+    },
+    "generated_report_text": {
+      "type": "string",
+      "description": "AI\u751f\u6210\u30ec\u30dd\u30fc\u30c8\u672c\u6587"
+    },
+    "generated_settlement_text": {
+      "type": "string",
+      "description": "AI\u751f\u6210\u7cbe\u7b97\u66f8\u30c6\u30ad\u30b9\u30c8"
+    }
+  },
+  "required": [
+    "report_type"
+  ]
+}
