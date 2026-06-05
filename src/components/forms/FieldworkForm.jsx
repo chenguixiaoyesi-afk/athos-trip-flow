@@ -84,12 +84,13 @@ export default function FieldworkForm({ onBack }) {
     other_work_fee: 0,
     remarks: '',
   });
-  const [receiptFiles, setReceiptFiles] = useState([]);
-  const [receiptUrls, setReceiptUrls] = useState([]);
-  // AI仕分け結果: [{url, name, parsed: {category, amount, store, date}}]
-  const [receiptData, setReceiptData] = useState([]);
-  const [uploadingIdx, setUploadingIdx] = useState(null);
-  const [analyzingIdx, setAnalyzingIdx] = useState(null);
+  // 領収書 single-source-of-truth: 安定 id をキーに url / name / parsed を 1 エンティティに統合
+  // 並列アップロード時の添字ずれを構造的に解消（既知不具合 #4）
+  // status: 'uploading' | 'analyzing' | 'done' | 'failed'
+  const [receipts, setReceipts] = useState([]);
+  const receiptUrls = receipts.map(r => r.url).filter(Boolean);
+  const isUploading = receipts.some(r => r.status === 'uploading');
+  const isAnalyzing = receipts.some(r => r.status === 'analyzing');
   const [errors, setErrors] = useState({});
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState(null);
@@ -138,18 +139,33 @@ export default function FieldworkForm({ onBack }) {
 
   const handleReceiptUpload = async (e) => {
     const files = Array.from(e.target.files);
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const idx = receiptUrls.length + i;
-      setUploadingIdx(idx);
+    // 安定 id 付き entry を先に発行してから順次処理する。state 更新は全て id 一致で行うため
+    // 添字（インデックス）依存が消え、並列の handleReceiptUpload 呼び出しや batched setState
+    // のいずれでも 3 つの概念フィールド（url / name / parsed）の対応が崩れない。
+    const baseId = Date.now();
+    const entries = files.map((file, i) => ({
+      id: `${baseId}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+    }));
+    setReceipts(prev => [
+      ...prev,
+      ...entries.map(({ id, file }) => ({
+        id,
+        url: null,
+        name: file.name,
+        parsed: null,
+        status: 'uploading',
+      })),
+    ]);
+
+    for (const { id, file } of entries) {
       try {
         const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        setReceiptUrls(prev => [...prev, file_url]);
-        setReceiptFiles(prev => [...prev, file.name]);
+        setReceipts(prev => prev.map(r =>
+          r.id === id ? { ...r, url: file_url, status: 'analyzing' } : r
+        ));
 
         // AIで領収書を解析
-        setUploadingIdx(null);
-        setAnalyzingIdx(idx);
         try {
           const parsed = await base44.integrations.Core.InvokeLLM({
             prompt: `この領収書画像を読み取り、以下のJSON形式で情報を抽出してください。
@@ -165,7 +181,9 @@ export default function FieldworkForm({ onBack }) {
               },
             },
           });
-          setReceiptData(prev => [...prev, { url: file_url, name: file.name, parsed }]);
+          setReceipts(prev => prev.map(r =>
+            r.id === id ? { ...r, parsed, status: 'done' } : r
+          ));
 
           // 自動でフォームに反映
           if (parsed.amount && parsed.amount > 0) {
@@ -175,18 +193,20 @@ export default function FieldworkForm({ onBack }) {
             setForm(prev => ({ ...prev, [matchedKey]: (prev[matchedKey] || 0) + parsed.amount }));
           }
         } catch {
-          setReceiptData(prev => [...prev, { url: file_url, name: file.name, parsed: null }]);
+          setReceipts(prev => prev.map(r =>
+            r.id === id ? { ...r, parsed: null, status: 'done' } : r
+          ));
         }
-        setAnalyzingIdx(null);
-      } catch (err) { console.error(err); setUploadingIdx(null); setAnalyzingIdx(null); }
+      } catch (err) {
+        // アップロード失敗時は元実装に倣い、当該 entry を receipts から除去する
+        console.error(err);
+        setReceipts(prev => prev.filter(r => r.id !== id));
+      }
     }
-    setUploadingIdx(null);
   };
 
-  const removeReceipt = (idx) => {
-    setReceiptUrls(prev => prev.filter((_, i) => i !== idx));
-    setReceiptFiles(prev => prev.filter((_, i) => i !== idx));
-    setReceiptData(prev => prev.filter((_, i) => i !== idx));
+  const removeReceipt = (id) => {
+    setReceipts(prev => prev.filter(r => r.id !== id));
   };
 
   const validate = () => {
@@ -398,40 +418,37 @@ export default function FieldworkForm({ onBack }) {
                 <span className="text-sm text-muted-foreground">領収書を撮影・選択（複数可）</span>
                 <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleReceiptUpload} />
               </label>
-              {(uploadingIdx !== null || analyzingIdx !== null) && (
+              {(isUploading || isAnalyzing) && (
                 <div className="flex items-center gap-2 mt-2 text-sm text-muted-foreground">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {analyzingIdx !== null ? 'AIが領収書を解析中...' : 'アップロード中...'}
+                  {isAnalyzing ? 'AIが領収書を解析中...' : 'アップロード中...'}
                 </div>
               )}
-              {receiptFiles.length > 0 && (
+              {receipts.length > 0 && (
                 <div className="mt-2 space-y-2">
-                  {receiptFiles.map((name, idx) => {
-                    const rd = receiptData[idx];
-                    return (
-                      <div key={idx} className="bg-muted/40 rounded-lg px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm">
-                          <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
-                          <span className="truncate flex-1 text-xs text-muted-foreground">{name}</span>
-                          <button onClick={() => removeReceipt(idx)} className="text-muted-foreground hover:text-destructive ml-auto">
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        {rd?.parsed && (
-                          <div className="mt-1.5 flex flex-wrap gap-2 text-xs">
-                            {rd.parsed.store && <span className="bg-white border rounded px-2 py-0.5">{rd.parsed.store}</span>}
-                            {rd.parsed.category && <span className="bg-[#1a237e]/10 text-[#1a237e] rounded px-2 py-0.5">{rd.parsed.category}</span>}
-                            {rd.parsed.amount > 0 && <span className="bg-green-50 text-green-700 border border-green-200 rounded px-2 py-0.5 font-semibold">¥{rd.parsed.amount.toLocaleString()}</span>}
-                            {rd.parsed.date && <span className="text-muted-foreground">{rd.parsed.date}</span>}
-                            <span className="text-green-600 flex items-center gap-0.5"><Sparkles className="w-3 h-3" />自動反映済</span>
-                          </div>
-                        )}
-                        {rd && !rd.parsed && (
-                          <p className="text-xs text-muted-foreground mt-1">解析不可 — 手動で入力してください</p>
-                        )}
+                  {receipts.map((r) => (
+                    <div key={r.id} className="bg-muted/40 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-2 text-sm">
+                        <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
+                        <span className="truncate flex-1 text-xs text-muted-foreground">{r.name}</span>
+                        <button onClick={() => removeReceipt(r.id)} className="text-muted-foreground hover:text-destructive ml-auto">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                    );
-                  })}
+                      {r.parsed && (
+                        <div className="mt-1.5 flex flex-wrap gap-2 text-xs">
+                          {r.parsed.store && <span className="bg-white border rounded px-2 py-0.5">{r.parsed.store}</span>}
+                          {r.parsed.category && <span className="bg-[#1a237e]/10 text-[#1a237e] rounded px-2 py-0.5">{r.parsed.category}</span>}
+                          {r.parsed.amount > 0 && <span className="bg-green-50 text-green-700 border border-green-200 rounded px-2 py-0.5 font-semibold">¥{r.parsed.amount.toLocaleString()}</span>}
+                          {r.parsed.date && <span className="text-muted-foreground">{r.parsed.date}</span>}
+                          <span className="text-green-600 flex items-center gap-0.5"><Sparkles className="w-3 h-3" />自動反映済</span>
+                        </div>
+                      )}
+                      {r.status === 'done' && !r.parsed && (
+                        <p className="text-xs text-muted-foreground mt-1">解析不可 — 手動で入力してください</p>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
