@@ -65,6 +65,18 @@ export default function DayTripForm({ onBack }) {
 
   const handleGenerate = async () => {
     if (!validate()) return;
+    if (form.travel_date) {
+      const existing = await base44.entities.Report.filter({
+        created_by_id: user?.id,
+        report_type: '日帰り出張',
+        travel_date: form.travel_date,
+      });
+      const conflicting = existing.filter(r => r.status !== '差戻し');
+      if (conflicting.length > 0) {
+        setErrors(prev => ({ ...prev, travel_date: '同一日に既に日帰り出張レポートが存在します（1日1件まで）' }));
+        return;
+      }
+    }
     setGenerating(true);
     try {
       const reportData = {

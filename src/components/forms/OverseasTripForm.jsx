@@ -52,6 +52,18 @@ export default function OverseasTripForm({ onBack }) {
 
   const handleGenerate = async () => {
     if (!validate()) return;
+    if (form.start_date) {
+      const existing = await base44.entities.Report.filter({
+        created_by_id: user?.id,
+        report_type: '海外出張',
+        start_date: form.start_date,
+      });
+      const conflicting = existing.filter(r => r.status !== '差戻し');
+      if (conflicting.length > 0) {
+        setErrors(prev => ({ ...prev, start_date: '同一開始日に既に海外出張レポートが存在します（1日1件まで）' }));
+        return;
+      }
+    }
     setGenerating(true);
     try {
       const reportData = { ...form, report_type: '海外出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, total_amount: totalAmount };
