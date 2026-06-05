@@ -1,3 +1,27 @@
+## ⚠ REPOSITORY ISOLATION RULE（全 Agent 共通・最優先）
+
+This repository is **Athos TravelMate only**. Design / Implementation / Review Agents may reference **only** this repository, this working directory, `.claude-team/` files, `src/HANDOFF.md`, and this `README.md`.
+
+**Forbidden references**: other repositories / past projects / `order-system` / `proxyhub-platform` / 代理店プラットフォーム / 補助金システム / `Priority9` / HQ・Agency・Sales structure / `viewAs` structure.
+
+If any premise inconsistent with the current codebase is detected, the Agent must immediately stop and output:
+
+```
+FOREIGN CONTEXT DETECTED
+
+出典: ...
+検出箇所: ...
+不一致内容: ...
+```
+
+- Implementation Agent: must NOT make any code changes.
+- Review Agent: must output `REJECTED / FOREIGN CONTEXT DETECTED` and must NOT declare `PHASE COMPLETE`.
+- Design Agent: may issue a new Design Handoff only after the cause is removed.
+
+Authoritative source: `.claude-team/goal.md` §0.
+
+---
+
 **Welcome to your Base44 project** 
 
 **About**

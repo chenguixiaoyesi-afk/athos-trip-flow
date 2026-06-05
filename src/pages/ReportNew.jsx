@@ -1,7 +1,5 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Plane, BedDouble, Globe, MapPin, ChevronRight } from 'lucide-react';
 import DayTripForm from '@/components/forms/DayTripForm';
 import OvernightTripForm from '@/components/forms/OvernightTripForm';

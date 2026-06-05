@@ -5,7 +5,6 @@ import { useAuth } from '@/lib/AuthContext';
 import { FilePlus, TrendingUp, Calendar, Briefcase, Clock, CheckCircle, XCircle, AlertCircle, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { ja } from 'date-fns/locale';
 

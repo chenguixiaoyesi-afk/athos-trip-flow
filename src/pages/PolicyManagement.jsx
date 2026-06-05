@@ -7,9 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Upload, Loader2, CheckCircle, AlertTriangle, FileText } from 'lucide-react';
-import { format } from 'date-fns';
-import ReactMarkdown from 'react-markdown';
+import { Upload, Loader2, CheckCircle, FileText } from 'lucide-react';
 
 export default function PolicyManagement() {
   const { policy, setPolicy } = usePolicy();
