@@ -6,12 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Download, TrendingUp, TrendingDown, Minus, Settings } from 'lucide-react';
-import { format, getYear, getMonth } from 'date-fns';
+import { Download, TrendingUp, TrendingDown, Minus, Settings, Mail, Loader2, Filter } from 'lucide-react';
+import { getYear, getMonth } from 'date-fns';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell,
 } from 'recharts';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { aggregateMonthlySummary, formatSummaryForEmail, buildReportsCSV, buildReportsCSVAsync } from '@/lib/aggregation';
+import { notifyMonthlySummary } from '@/lib/notifications';
 
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const PIE_COLORS = ['#1a237e', '#4caf50', '#ff9800', '#e53935'];
@@ -28,6 +31,20 @@ export default function Summary() {
   });
   const [showBudgetInput, setShowBudgetInput] = useState(false);
   const [budgetInput, setBudgetInput] = useState('');
+  // A6: admin 手動配信ボタンの状態
+  const [sendingMonthly, setSendingMonthly] = useState(false);
+  const [sendResult, setSendResult] = useState(null); // 'success' | 'fail' | null
+
+  // A7: 監査用 CSV エクスポートの絞り込みダイアログ + 進捗
+  const [showAuditDialog, setShowAuditDialog] = useState(false);
+  const [auditFilter, setAuditFilter] = useState({
+    startDate: '', // YYYY-MM-DD（作成日 created_date でフィルタ）
+    endDate: '',
+    userName: '',  // '' = 全員
+    reportType: '', // '' = 全種別
+  });
+  const [auditExporting, setAuditExporting] = useState(false);
+  const [auditProgress, setAuditProgress] = useState({ done: 0, total: 0 });
 
   useEffect(() => {
     const load = async () => {
@@ -103,23 +120,91 @@ export default function Summary() {
   };
 
   const exportCSV = () => {
-    const headers = ['レポートID', '種別', '作成者', '年月', '日付', '目的地', 'ステータス', '合計金額'];
-    const rows = yearReports.map(r => [
-      r.report_number || r.id?.slice(-6),
-      r.report_type,
-      r.created_by_name,
-      format(new Date(r.created_date), 'yyyy/MM'),
-      r.travel_date || r.start_date || format(new Date(r.created_date), 'yyyy-MM-dd'),
-      r.destination_name || `${r.country_name || ''} ${r.city_name || ''}`.trim() || '',
-      r.status,
-      r.total_amount || 0,
-    ]);
-    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+    // A6: 純粋関数 buildReportsCSV に CSV 組み立てを委譲。
+    // browser 依存処理（BOM 付与 + Blob 化 + Download トリガ）は UI 層に残す。
+    // headers / 列構造 / BOM / ファイル名形式は既存と完全等価。
+    const csv = buildReportsCSV(yearReports);
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `旅費精算_${year}年_経理用.csv`;
     link.click();
+  };
+
+  // A6: admin 向け「先月の集計を管理者へ送信」ボタンのハンドラ
+  // 月またぎ補正: 1 月時の「先月」は前年 12 月
+  const sendPreviousMonthSummary = async () => {
+    setSendingMonthly(true);
+    setSendResult(null);
+    try {
+      const now = new Date();
+      const targetYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+      const targetMonth = now.getMonth() === 0 ? 12 : now.getMonth(); // 1-12
+
+      const aggregate = aggregateMonthlySummary(reports, { year: targetYear, month: targetMonth });
+      const summaryBody = formatSummaryForEmail(aggregate);
+      const csvContent = buildReportsCSV(aggregate.reports);
+
+      await notifyMonthlySummary({
+        year: targetYear,
+        month: targetMonth,
+        summary: summaryBody,
+        csvContent,
+      });
+      setSendResult('success');
+    } catch (e) {
+      // notifyMonthlySummary は通常 throw しない（safeSend で吸収）が、念のため fail を表示
+      console.warn('[Summary] sendPreviousMonthSummary error', e);
+      setSendResult('fail');
+    } finally {
+      setSendingMonthly(false);
+    }
+  };
+
+  // A7: 絞り込み用の動的選択肢
+  const userOptions = Array.from(new Set(reports.map(r => r.created_by_name).filter(Boolean))).sort();
+  const typeOptions = ['日帰り出張', '宿泊出張', '海外出張', '外出作業'];
+
+  // A7: 絞り込み（純粋計算、`created_date` の YYYY-MM-DD 部分で比較）
+  const filterReportsForAudit = (allReports, filter) => {
+    return (allReports || []).filter(r => {
+      const rDate = r.created_date ? r.created_date.slice(0, 10) : '';
+      if (filter.startDate && rDate < filter.startDate) return false;
+      if (filter.endDate && rDate > filter.endDate) return false;
+      if (filter.userName && r.created_by_name !== filter.userName) return false;
+      if (filter.reportType && r.report_type !== filter.reportType) return false;
+      return true;
+    });
+  };
+
+  // A7: 監査用 CSV エクスポートハンドラ
+  const exportAuditCSV = async () => {
+    setAuditExporting(true);
+    setAuditProgress({ done: 0, total: 0 });
+    try {
+      const filtered = filterReportsForAudit(reports, auditFilter);
+      if (filtered.length === 0) {
+        alert('該当するレポートがありません。絞り込み条件を見直してください。');
+        return;
+      }
+      const csv = await buildReportsCSVAsync(filtered, {
+        format: 'audit',
+        chunkSize: 200,
+        onProgress: (state) => setAuditProgress(state),
+      });
+      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      const datePart = `${auditFilter.startDate || 'all'}_${auditFilter.endDate || 'all'}`;
+      link.download = `旅費精算_監査用_${datePart}.csv`;
+      link.click();
+      setShowAuditDialog(false);
+    } catch (e) {
+      console.warn('[Summary] exportAuditCSV error', e);
+      alert('CSV 出力中にエラーが発生しました。コンソールを確認してください。');
+    } finally {
+      setAuditExporting(false);
+    }
   };
 
   const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
@@ -157,8 +242,36 @@ export default function Summary() {
           <Button variant="outline" onClick={exportCSV} className="gap-2">
             <Download className="w-4 h-4" />CSV出力
           </Button>
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={sendPreviousMonthSummary}
+              disabled={sendingMonthly}
+              className="gap-2"
+            >
+              {sendingMonthly ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+              {sendingMonthly ? '送信中...' : '先月の集計を管理者に送信'}
+            </Button>
+          )}
+          {isAdmin && (
+            <Button variant="outline" onClick={() => setShowAuditDialog(true)} className="gap-2">
+              <Filter className="w-4 h-4" />
+              監査用 CSV 出力
+            </Button>
+          )}
         </div>
       </div>
+
+      {isAdmin && sendResult && (
+        <div className="mb-4 text-xs">
+          {sendResult === 'success' && (
+            <span className="text-green-600">✓ 送信トリガ完了（実際の配信は SendEmail ログを確認）</span>
+          )}
+          {sendResult === 'fail' && (
+            <span className="text-red-600">⚠ 送信トリガでエラーが発生しました（コンソール確認）</span>
+          )}
+        </div>
+      )}
 
       {/* Budget input */}
       {showBudgetInput && (
@@ -362,6 +475,79 @@ export default function Summary() {
           </CardContent>
         </Card>
       )}
+
+      {/* A7: 監査用 CSV 出力ダイアログ（admin のみ表示） */}
+      <Dialog open={showAuditDialog} onOpenChange={setShowAuditDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>監査用 CSV 出力 — 絞り込み</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">開始日（作成日）</Label>
+                <Input
+                  type="date"
+                  value={auditFilter.startDate}
+                  onChange={e => setAuditFilter(f => ({ ...f, startDate: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">終了日（作成日）</Label>
+                <Input
+                  type="date"
+                  value={auditFilter.endDate}
+                  onChange={e => setAuditFilter(f => ({ ...f, endDate: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">ユーザー</Label>
+              <Select
+                value={auditFilter.userName || '__all__'}
+                onValueChange={v => setAuditFilter(f => ({ ...f, userName: v === '__all__' ? '' : v }))}
+              >
+                <SelectTrigger><SelectValue placeholder="全員" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">全員</SelectItem>
+                  {userOptions.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">種別</Label>
+              <Select
+                value={auditFilter.reportType || '__all__'}
+                onValueChange={v => setAuditFilter(f => ({ ...f, reportType: v === '__all__' ? '' : v }))}
+              >
+                <SelectTrigger><SelectValue placeholder="全種別" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">全種別</SelectItem>
+                  {typeOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {auditExporting && (
+              <div className="text-xs text-muted-foreground">
+                生成中: {auditProgress.done} / {auditProgress.total} 件...
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAuditDialog(false)} disabled={auditExporting}>
+              キャンセル
+            </Button>
+            <Button
+              onClick={exportAuditCSV}
+              disabled={auditExporting}
+              className="bg-[#1a237e] hover:bg-[#1a237e]/90 text-white gap-2"
+            >
+              {auditExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              ダウンロード
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

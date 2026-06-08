@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { notifyApproved, notifyRejected } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -38,11 +39,17 @@ export default function Approval() {
 
   const handleApprove = async (reportId) => {
     setProcessing(true);
+    // 通知のため、対象 report を事前確保（loadReports 後に reports state がリフレッシュされるため）
+    const target = reports.find(r => r.id === reportId);
     await base44.entities.Report.update(reportId, {
       status: '承認済',
       approver_name: user?.full_name,
       approved_date: new Date().toISOString().split('T')[0],
     });
+    // 承認通知（throw しない、ヘルパー内で吸収）
+    if (target) {
+      await notifyApproved({ report: target, approverName: user?.full_name });
+    }
     await loadReports();
     setSelected(null);
     setProcessing(false);
@@ -51,10 +58,21 @@ export default function Approval() {
   const handleReject = async () => {
     if (!rejectionReason.trim()) return;
     setProcessing(true);
+    // 通知のため、selected を事前に確保（loadReports / setSelected(null) の前）
+    const target = selected;
+    const reason = rejectionReason;
     await base44.entities.Report.update(selected.id, {
       status: '差戻し',
       rejection_reason: rejectionReason,
     });
+    // 差戻し通知（throw しない、ヘルパー内で吸収）
+    if (target) {
+      await notifyRejected({
+        report: target,
+        approverName: user?.full_name,
+        rejectionReason: reason,
+      });
+    }
     await loadReports();
     setSelected(null);
     setShowRejectDialog(false);
@@ -65,6 +83,8 @@ export default function Approval() {
   const handleBulkApprove = async () => {
     if (!confirm(`選択した${selectedIds.length}件を一括承認しますか？`)) return;
     setProcessing(true);
+    // 通知のため、対象 reports を事前確保
+    const targets = reports.filter(r => selectedIds.includes(r.id));
     for (const id of selectedIds) {
       await base44.entities.Report.update(id, {
         status: '承認済',
@@ -72,6 +92,12 @@ export default function Approval() {
         approved_date: new Date().toISOString().split('T')[0],
       });
     }
+    // 一括承認通知（並列発火、ヘルパー内で各々失敗吸収）
+    await Promise.all(
+      targets.map(target =>
+        notifyApproved({ report: target, approverName: user?.full_name })
+      )
+    );
     setSelectedIds([]);
     await loadReports();
     setProcessing(false);

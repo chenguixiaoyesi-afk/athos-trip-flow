@@ -6,12 +6,25 @@ import { usePolicy } from '@/lib/policyContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, Loader2, Upload, X, AlertTriangle, Clock, Sparkles, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Loader2, AlertTriangle, Clock } from 'lucide-react';
 import { FormField, FormInput, FormTextarea } from './FormField';
 import AmountSummary from './AmountSummary';
 import TransportSelector from './TransportSelector';
+import ReceiptUploaderSection from './ReceiptUploaderSection';
 import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
+import { useReceiptParser } from '@/hooks/useReceiptParser';
+import { notifySubmitted } from '@/lib/notifications';
+
+// 外出作業フォーム用カテゴリ→経費フィールドマッピング
+const CATEGORY_MAP_FIELDWORK = {
+  'コワーキング': 'coworking_fee', 'coworking': 'coworking_fee',
+  '貸会議室': 'coworking_fee', '会議室': 'coworking_fee',
+  'wifi': 'wifi_fee', 'Wi-Fi': 'wifi_fee', '通信': 'wifi_fee', 'インターネット': 'wifi_fee',
+  '駐車場': 'parking_fee', 'parking': 'parking_fee',
+  '飲食': 'meal_fee', '食事': 'meal_fee', 'カフェ': 'meal_fee', 'レストラン': 'meal_fee', 'コーヒー': 'meal_fee',
+};
+const FALLBACK_FIELDWORK = 'other_work_fee';
 
 const STORAGE_KEY = 'fieldwork_defaults';
 
@@ -58,39 +71,72 @@ function TimePicker({ label, value, onChange, error }) {
   );
 }
 
-export default function FieldworkForm({ onBack }) {
+export default function FieldworkForm({ onBack, mode = 'create', initialReport = null }) {
   const { user } = useAuth();
   const { policy } = usePolicy();
   const navigate = useNavigate();
 
   // Load saved defaults (destination only — not date)
+  // edit モード時は initialReport を優先するため、savedDefaults は読まない
   const savedDefaults = (() => {
+    if (mode === 'edit') return {};
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
   })();
 
-  const [form, setForm] = useState({
-    travel_date: new Date().toISOString().slice(0, 10), // default today
-    destination_name: savedDefaults.destination_name || '',
-    destination_address: savedDefaults.destination_address || '',
-    work_start_time: savedDefaults.work_start_time || '',
-    work_end_time: savedDefaults.work_end_time || '',
-    business_content: '',
-    transport_methods: savedDefaults.transport_methods || [],
-    driving_distance_km: savedDefaults.driving_distance_km || 0,
-    coworking_fee: savedDefaults.coworking_fee || 0,
-    wifi_fee: savedDefaults.wifi_fee || 0,
-    parking_fee: savedDefaults.parking_fee || 0,
-    meal_fee: 0,
-    other_work_fee: 0,
-    remarks: '',
+  const [form, setForm] = useState(() => {
+    if (mode === 'edit' && initialReport) {
+      return {
+        travel_date: initialReport.travel_date || '',
+        destination_name: initialReport.destination_name || '',
+        destination_address: initialReport.destination_address || '',
+        work_start_time: initialReport.work_start_time || '',
+        work_end_time: initialReport.work_end_time || '',
+        business_content: initialReport.business_content || '',
+        transport_methods: initialReport.transport_methods || [],
+        driving_distance_km: initialReport.driving_distance_km || 0,
+        coworking_fee: initialReport.coworking_fee || 0,
+        wifi_fee: initialReport.wifi_fee || 0,
+        parking_fee: initialReport.parking_fee || 0,
+        meal_fee: initialReport.meal_fee || 0,
+        other_work_fee: initialReport.other_work_fee || 0,
+        remarks: initialReport.remarks || '',
+      };
+    }
+    return {
+      travel_date: new Date().toISOString().slice(0, 10), // default today
+      destination_name: savedDefaults.destination_name || '',
+      destination_address: savedDefaults.destination_address || '',
+      work_start_time: savedDefaults.work_start_time || '',
+      work_end_time: savedDefaults.work_end_time || '',
+      business_content: '',
+      transport_methods: savedDefaults.transport_methods || [],
+      driving_distance_km: savedDefaults.driving_distance_km || 0,
+      coworking_fee: savedDefaults.coworking_fee || 0,
+      wifi_fee: savedDefaults.wifi_fee || 0,
+      parking_fee: savedDefaults.parking_fee || 0,
+      meal_fee: 0,
+      other_work_fee: 0,
+      remarks: '',
+    };
   });
-  // 領収書 single-source-of-truth: 安定 id をキーに url / name / parsed を 1 エンティティに統合
-  // 並列アップロード時の添字ずれを構造的に解消（既知不具合 #4）
-  // status: 'uploading' | 'analyzing' | 'done' | 'failed'
-  const [receipts, setReceipts] = useState([]);
-  const receiptUrls = receipts.map(r => r.url).filter(Boolean);
-  const isUploading = receipts.some(r => r.status === 'uploading');
-  const isAnalyzing = receipts.some(r => r.status === 'analyzing');
+  // 領収書 AI 仕分けは useReceiptParser に集約（A4 で抽出）。
+  // edit モード時は initialReceiptUrls 経由で復元。
+  const onAmountParsed = (mapKey, amount) => {
+    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
+  };
+  const {
+    receipts,
+    handleReceiptUpload,
+    removeReceipt,
+    isUploading,
+    isAnalyzing,
+    receiptUrls,
+  } = useReceiptParser({
+    initialReceiptUrls: mode === 'edit' && initialReport?.receipt_urls ? initialReport.receipt_urls : [],
+    categoryMap: CATEGORY_MAP_FIELDWORK,
+    fallbackKey: FALLBACK_FIELDWORK,
+    onAmountParsed,
+  });
   const [errors, setErrors] = useState({});
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState(null);
@@ -128,87 +174,6 @@ export default function FieldworkForm({ onBack }) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
   }, [form]);
 
-  // カテゴリ→フォームキー のマッピング
-  const CATEGORY_MAP = {
-    'コワーキング': 'coworking_fee', 'coworking': 'coworking_fee',
-    '貸会議室': 'coworking_fee', '会議室': 'coworking_fee',
-    'wifi': 'wifi_fee', 'Wi-Fi': 'wifi_fee', '通信': 'wifi_fee', 'インターネット': 'wifi_fee',
-    '駐車場': 'parking_fee', 'parking': 'parking_fee',
-    '飲食': 'meal_fee', '食事': 'meal_fee', 'カフェ': 'meal_fee', 'レストラン': 'meal_fee', 'コーヒー': 'meal_fee',
-  };
-
-  const handleReceiptUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    // 安定 id 付き entry を先に発行してから順次処理する。state 更新は全て id 一致で行うため
-    // 添字（インデックス）依存が消え、並列の handleReceiptUpload 呼び出しや batched setState
-    // のいずれでも 3 つの概念フィールド（url / name / parsed）の対応が崩れない。
-    const baseId = Date.now();
-    const entries = files.map((file, i) => ({
-      id: `${baseId}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-    }));
-    setReceipts(prev => [
-      ...prev,
-      ...entries.map(({ id, file }) => ({
-        id,
-        url: null,
-        name: file.name,
-        parsed: null,
-        status: 'uploading',
-      })),
-    ]);
-
-    for (const { id, file } of entries) {
-      try {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        setReceipts(prev => prev.map(r =>
-          r.id === id ? { ...r, url: file_url, status: 'analyzing' } : r
-        ));
-
-        // AIで領収書を解析
-        try {
-          const parsed = await base44.integrations.Core.InvokeLLM({
-            prompt: `この領収書画像を読み取り、以下のJSON形式で情報を抽出してください。
-カテゴリは「コワーキング」「貸会議室」「Wi-Fi」「駐車場」「飲食」「その他」のいずれかに分類してください。`,
-            file_urls: [file_url],
-            response_json_schema: {
-              type: 'object',
-              properties: {
-                store: { type: 'string', description: '店舗・施設名' },
-                amount: { type: 'number', description: '合計金額（円）' },
-                date: { type: 'string', description: '日付 YYYY-MM-DD' },
-                category: { type: 'string', description: 'カテゴリ' },
-              },
-            },
-          });
-          setReceipts(prev => prev.map(r =>
-            r.id === id ? { ...r, parsed, status: 'done' } : r
-          ));
-
-          // 自動でフォームに反映
-          if (parsed.amount && parsed.amount > 0) {
-            const matchedKey = Object.entries(CATEGORY_MAP).find(([cat]) =>
-              parsed.category?.includes(cat)
-            )?.[1] || 'other_work_fee';
-            setForm(prev => ({ ...prev, [matchedKey]: (prev[matchedKey] || 0) + parsed.amount }));
-          }
-        } catch {
-          setReceipts(prev => prev.map(r =>
-            r.id === id ? { ...r, parsed: null, status: 'done' } : r
-          ));
-        }
-      } catch (err) {
-        // アップロード失敗時は元実装に倣い、当該 entry を receipts から除去する
-        console.error(err);
-        setReceipts(prev => prev.filter(r => r.id !== id));
-      }
-    }
-  };
-
-  const removeReceipt = (id) => {
-    setReceipts(prev => prev.filter(r => r.id !== id));
-  };
-
   const validate = () => {
     const e = {};
     if (!form.travel_date) e.travel_date = '作業日を入力してください';
@@ -236,7 +201,9 @@ export default function FieldworkForm({ onBack }) {
         report_type: '外出作業',
         travel_date: form.travel_date,
       });
-      const conflicting = existing.filter(r => r.status !== '差戻し');
+      const conflicting = existing
+        .filter(r => r.id !== initialReport?.id)  // edit 時は自身を除外
+        .filter(r => r.status !== '差戻し');
       if (conflicting.length > 0) {
         setErrors(prev => ({ ...prev, travel_date: '同一日に既に外出作業レポートが存在します（1日1件まで）' }));
         return;
@@ -262,16 +229,27 @@ export default function FieldworkForm({ onBack }) {
     try {
       const data = {
         ...form, report_type: '外出作業', status,
-        report_number: `RPT-${Date.now().toString().slice(-8)}`,
-        created_by_name: user?.full_name, created_by_email: user?.email,
+        report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
+        created_by_name: mode === 'edit' ? initialReport.created_by_name : user?.full_name,
+        created_by_email: mode === 'edit' ? initialReport.created_by_email : user?.email,
         car_allowance: carAllowance,
         total_work_expense: totalWorkExpense,
         total_amount: totalAmount,
         receipt_urls: receiptUrls,
-        generated_report_text: generatedReport?.reportText || '',
-        generated_settlement_text: generatedReport?.settlementText || '',
+        generated_report_text: generatedReport?.reportText || initialReport?.generated_report_text || '',
+        generated_settlement_text: generatedReport?.settlementText || initialReport?.generated_settlement_text || '',
       };
-      const saved = await base44.entities.Report.create(data);
+      let saved;
+      if (mode === 'edit') {
+        await base44.entities.Report.update(initialReport.id, data);
+        saved = { id: initialReport.id };
+      } else {
+        saved = await base44.entities.Report.create(data);
+      }
+      // 申請通知（throw しない、status 遷移を破壊しない）
+      if (status === '申請中') {
+        await notifySubmitted({ report: { ...data, id: saved.id } });
+      }
       navigate(`/reports/${saved.id}`);
     } finally { setSaving(false); }
   };
@@ -406,52 +384,14 @@ export default function FieldworkForm({ onBack }) {
               </span>
             </div>
 
-            {/* 領収書 */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-sm font-medium">領収書アップロード <span className="text-muted-foreground font-normal text-xs">（任意・写真でOK）</span></p>
-                <span className="flex items-center gap-1 text-xs text-[#1a237e]"><Sparkles className="w-3 h-3" />AI自動仕分け</span>
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">写真を撮ってアップするだけで金額・カテゴリを自動判定して経費欄に反映します</p>
-              <label className="flex items-center gap-2 px-4 py-3 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-[#1a237e]/50 transition-colors">
-                <Upload className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">領収書を撮影・選択（複数可）</span>
-                <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleReceiptUpload} />
-              </label>
-              {(isUploading || isAnalyzing) && (
-                <div className="flex items-center gap-2 mt-2 text-sm text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {isAnalyzing ? 'AIが領収書を解析中...' : 'アップロード中...'}
-                </div>
-              )}
-              {receipts.length > 0 && (
-                <div className="mt-2 space-y-2">
-                  {receipts.map((r) => (
-                    <div key={r.id} className="bg-muted/40 rounded-lg px-3 py-2">
-                      <div className="flex items-center gap-2 text-sm">
-                        <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
-                        <span className="truncate flex-1 text-xs text-muted-foreground">{r.name}</span>
-                        <button onClick={() => removeReceipt(r.id)} className="text-muted-foreground hover:text-destructive ml-auto">
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      {r.parsed && (
-                        <div className="mt-1.5 flex flex-wrap gap-2 text-xs">
-                          {r.parsed.store && <span className="bg-white border rounded px-2 py-0.5">{r.parsed.store}</span>}
-                          {r.parsed.category && <span className="bg-[#1a237e]/10 text-[#1a237e] rounded px-2 py-0.5">{r.parsed.category}</span>}
-                          {r.parsed.amount > 0 && <span className="bg-green-50 text-green-700 border border-green-200 rounded px-2 py-0.5 font-semibold">¥{r.parsed.amount.toLocaleString()}</span>}
-                          {r.parsed.date && <span className="text-muted-foreground">{r.parsed.date}</span>}
-                          <span className="text-green-600 flex items-center gap-0.5"><Sparkles className="w-3 h-3" />自動反映済</span>
-                        </div>
-                      )}
-                      {r.status === 'done' && !r.parsed && (
-                        <p className="text-xs text-muted-foreground mt-1">解析不可 — 手動で入力してください</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {/* 領収書 — useReceiptParser + ReceiptUploaderSection（A4 で抽出） */}
+            <ReceiptUploaderSection
+              receipts={receipts}
+              handleReceiptUpload={handleReceiptUpload}
+              removeReceipt={removeReceipt}
+              isUploading={isUploading}
+              isAnalyzing={isAnalyzing}
+            />
           </CardContent>
         </Card>
 

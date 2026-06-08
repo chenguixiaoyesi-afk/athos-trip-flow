@@ -9,7 +9,16 @@ const STYLE_RULES = `
 - 成果・所見は入力された業務内容から論理的に推測できる範囲で簡潔に記載すること
 - 推測が困難な場合は「[要記入]」と記載し、ユーザーに入力を促すこと
 - 金額は全て自動計算値を使用し、手動で変更しないこと
+
+【精算書見出しルール（既知不具合 #2 解消、厳守）】
+- 出張報告書（日帰り出張・宿泊出張・海外出張）の精算書見出しは「## 旅費精算書」と一字一句正確に出力すること
+- 外出作業報告書の精算書見出しは「## 経費精算書」と一字一句正確に出力すること
+- 表記揺れ（例: 「## 精算書」「## 旅費精算」「## 旅費精算書（合計）」「## 旅費精算書 詳細」など）は厳禁
+- 見出しの前後に余分な文字（記号、注釈、改行ずれ）を入れないこと
 `;
+
+// 精算書見出し検出 regex（既知不具合 #2 解消、行頭・行末アンカ、前後空白許容）
+const SETTLEMENT_HEADING_RE = /^##\s*(旅費精算書|経費精算書)\s*$/m;
 
 export async function generateReport(reportData, user, policy) {
   const today = format(new Date(), 'yyyy年MM月dd日', { locale: ja });
@@ -241,17 +250,17 @@ ${STYLE_RULES}
 
   const result = await base44.integrations.Core.InvokeLLM({ prompt });
 
-  const parts = result.split('## 旅費精算書');
-  const settlementPart = result.includes('## 旅費精算書')
-    ? '## 旅費精算書' + parts[1]
-    : result.includes('## 経費精算書')
-      ? '## 経費精算書' + result.split('## 経費精算書')[1]
-      : '';
+  // 既知不具合 #2 解消: 見出し regex で安全に分割
+  // - 行頭・行末アンカで「## 旅費精算書（合計）」等の表記揺れ誤検出を回避
+  // - 見出しが完全に出力されなかった場合も settlementText: '' で安全フォールバック
+  const match = result.match(SETTLEMENT_HEADING_RE);
+  const settlementText = match ? result.slice(match.index) : '';
+  const reportBodyText = match ? result.slice(0, match.index).trimEnd() : result;
 
   return {
     reportText: result,
-    reportBodyText: result.split('## 旅費精算書')[0].split('## 経費精算書')[0] || result,
-    settlementText: settlementPart,
+    reportBodyText,
+    settlementText,
     rawData: reportData,
   };
 }

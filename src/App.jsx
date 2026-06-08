@@ -13,6 +13,7 @@ import Dashboard from '@/pages/Dashboard';
 import ReportNew from '@/pages/ReportNew';
 import ReportList from '@/pages/ReportList';
 import ReportDetail from '@/pages/ReportDetail';
+import ReportEdit from '@/pages/ReportEdit';
 import Approval from '@/pages/Approval';
 import Summary from '@/pages/Summary';
 import PolicyManagement from '@/pages/PolicyManagement';
@@ -48,6 +49,7 @@ const AuthenticatedApp = () => {
           <Route path="/reports" element={<ReportList />} />
           <Route path="/reports/new" element={<ReportNew />} />
           <Route path="/reports/:id" element={<ReportDetail />} />
+          <Route path="/reports/:id/edit" element={<ReportEdit />} />
           <Route path="/approval" element={<Approval />} />
           <Route path="/summary" element={<Summary />} />
           <Route path="/policy" element={<PolicyManagement />} />

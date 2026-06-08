@@ -7,7 +7,9 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Upload, Loader2, CheckCircle, FileText } from 'lucide-react';
+import { Upload, Loader2, CheckCircle, FileText, Eye } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { computeImpact } from '@/lib/policyImpactAnalyzer';
 
 export default function PolicyManagement() {
   const { policy, setPolicy } = usePolicy();
@@ -24,6 +26,12 @@ export default function PolicyManagement() {
   });
   const [saving, setSaving] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+
+  // A8: 規程変更影響範囲確認ダイアログ
+  const [showImpactDialog, setShowImpactDialog] = useState(false);
+  const [impactTarget, setImpactTarget] = useState(null);   // 比較対象 policy（規程一覧で選んだもの）
+  const [impactResult, setImpactResult] = useState(null);   // computeImpact 戻り値
+  const [impactLoading, setImpactLoading] = useState(false);
 
   useEffect(() => {
     loadPolicies();
@@ -137,6 +145,31 @@ export default function PolicyManagement() {
       await loadPolicies();
     } finally {
       setSaving(false);
+    }
+  };
+
+  // A8: 規程変更影響範囲を計算するハンドラ
+  // 業務ルール: 表示はシミュレーションのみ、DB への書き戻し（Report.update）は一切しない
+  const handleShowImpact = async (targetPolicy) => {
+    setImpactTarget(targetPolicy);
+    setShowImpactDialog(true);
+    setImpactLoading(true);
+    setImpactResult(null);
+    try {
+      // 承認済の Report 全件を取得（500 件まで、Summary / 月次配信と同方針）
+      const approvedReports = await base44.entities.Report.filter(
+        { status: '承認済' },
+        '-created_date',
+        500,
+      );
+      // 比較元: 現行 activePolicy（L 既存）、比較先: 履歴から選んだ targetPolicy
+      const result = computeImpact(approvedReports || [], activePolicy, targetPolicy);
+      setImpactResult(result);
+    } catch (e) {
+      console.warn('[PolicyManagement] computeImpact error', e);
+      setImpactResult({ totalReports: 0, affectedCount: 0, totalDiff: 0, items: [], error: true });
+    } finally {
+      setImpactLoading(false);
     }
   };
 
@@ -310,6 +343,17 @@ export default function PolicyManagement() {
                         <FileText className="w-3.5 h-3.5" />PDF
                       </a>
                     )}
+                    {!p.is_active && activePolicy && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleShowImpact(p)}
+                        className="text-xs gap-1"
+                        title="現行規程と比較して影響範囲を確認"
+                      >
+                        <Eye className="w-3.5 h-3.5" />影響範囲
+                      </Button>
+                    )}
                     {!p.is_active && (
                       <Button size="sm" variant="outline" onClick={() => handleActivate(p.id)}
                         className="text-xs border-[#1a237e] text-[#1a237e] hover:bg-[#1a237e]/5">
@@ -323,6 +367,90 @@ export default function PolicyManagement() {
           )}
         </CardContent>
       </Card>
+
+      {/* A8: 規程変更影響範囲確認 Dialog（admin 限定、業務ルール: シミュレーションのみで DB 書き戻しなし） */}
+      <Dialog open={showImpactDialog} onOpenChange={setShowImpactDialog}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              影響範囲: {impactTarget?.version || ''} → 現行規程（{activePolicy?.version || ''}）と比較
+            </DialogTitle>
+          </DialogHeader>
+          {impactLoading ? (
+            <div className="py-8 text-center">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
+              <p className="text-sm text-muted-foreground mt-2">承認済レポートで影響を計算中...</p>
+            </div>
+          ) : impactResult ? (
+            <div className="space-y-4 py-2">
+              {impactResult.error && (
+                <div className="text-sm text-red-600">計算中にエラーが発生しました。コンソールを確認してください。</div>
+              )}
+              {/* サマリ KPI 3 枚 */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-muted/30 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">承認済件数（評価対象）</p>
+                  <p className="font-bold text-lg">{impactResult.totalReports}</p>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <p className="text-xs text-amber-700">影響を受けるレポート件数</p>
+                  <p className="font-bold text-lg text-amber-700">{impactResult.affectedCount}</p>
+                </div>
+                <div className={`rounded-lg p-3 border ${impactResult.totalDiff > 0 ? 'bg-red-50 border-red-200' : impactResult.totalDiff < 0 ? 'bg-green-50 border-green-200' : 'bg-muted/30 border-border'}`}>
+                  <p className="text-xs text-muted-foreground">合計差額</p>
+                  <p className={`font-bold text-lg ${impactResult.totalDiff > 0 ? 'text-red-700' : impactResult.totalDiff < 0 ? 'text-green-700' : ''}`}>
+                    {impactResult.totalDiff > 0 ? '+' : ''}¥{impactResult.totalDiff.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+              {/* 影響レポート一覧 */}
+              {impactResult.items.length > 0 ? (
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs text-muted-foreground font-medium">レポートID</th>
+                        <th className="text-left px-3 py-2 text-xs text-muted-foreground font-medium">種別</th>
+                        <th className="text-left px-3 py-2 text-xs text-muted-foreground font-medium">作成者</th>
+                        <th className="text-right px-3 py-2 text-xs text-muted-foreground font-medium">旧合計</th>
+                        <th className="text-right px-3 py-2 text-xs text-muted-foreground font-medium">新合計</th>
+                        <th className="text-right px-3 py-2 text-xs text-muted-foreground font-medium">差分</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {impactResult.items.map((it, i) => (
+                        <tr key={i}>
+                          <td className="px-3 py-2 font-mono text-xs">{it.report.report_number || it.report.id?.slice(-6) || '-'}</td>
+                          <td className="px-3 py-2">{it.report.report_type}</td>
+                          <td className="px-3 py-2">{it.report.created_by_name}</td>
+                          <td className="px-3 py-2 text-right">¥{it.oldTotal.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right">¥{it.newTotal.toLocaleString()}</td>
+                          <td className={`px-3 py-2 text-right font-medium ${it.diff > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                            {it.diff > 0 ? '+' : ''}¥{it.diff.toLocaleString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : !impactResult.error ? (
+                <div className="text-center py-6 text-sm text-muted-foreground">
+                  影響を受けるレポートはありません（規程値の差分が承認済レポートの計算結果に影響しません）
+                </div>
+              ) : null}
+              {/* 業務ルール明示フッター */}
+              <div className="text-xs text-muted-foreground border-t pt-3">
+                ⚠ 表示は <strong>規程変更による計算差分のシミュレーション</strong> です。
+                過去の承認済レポートの計算値は <strong>業務ルールにより据え置き</strong> されており、
+                本画面の差額は <strong>DB に保存されません</strong>。
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImpactDialog(false)}>閉じる</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

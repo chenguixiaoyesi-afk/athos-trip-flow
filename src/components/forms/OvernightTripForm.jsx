@@ -10,30 +10,80 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import { FormField, FormInput, FormTextarea } from './FormField';
 import AmountSummary from './AmountSummary';
 import TransportSelector from './TransportSelector';
+import ReceiptUploaderSection from './ReceiptUploaderSection';
 import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
+import { useReceiptParser } from '@/hooks/useReceiptParser';
+import { notifySubmitted } from '@/lib/notifications';
 import { differenceInDays } from 'date-fns';
 
-export default function OvernightTripForm({ onBack }) {
+// 出張系の経費フィールドに領収書カテゴリをマッピング（DayTrip と共通構造）
+const CATEGORY_MAP_TRIP = {
+  '高速道路': 'highway_fee', '高速': 'highway_fee', 'ETC': 'highway_fee',
+  '駐車場': 'parking_fee', 'parking': 'parking_fee',
+  'タクシー': 'taxi_fee', 'taxi': 'taxi_fee',
+};
+const FALLBACK_TRIP = 'other_transport_fee';
+
+export default function OvernightTripForm({ onBack, mode = 'create', initialReport = null }) {
   const { user } = useAuth();
   const { policy } = usePolicy();
   const navigate = useNavigate();
 
-  const [form, setForm] = useState({
-    start_date: '', end_date: '',
-    destination_name: '', destination_address: '',
-    one_way_distance_km: '',
-    num_nights: 1,
-    business_content: '',
-    transport_methods: [],
-    driving_distance_km: 0,
-    highway_fee: 0, parking_fee: 0, taxi_fee: 0,
-    other_transport_fee: 0, shinkansen_reason: '', remarks: '',
+  const [form, setForm] = useState(() => {
+    if (mode === 'edit' && initialReport) {
+      return {
+        start_date: initialReport.start_date || '',
+        end_date: initialReport.end_date || '',
+        destination_name: initialReport.destination_name || '',
+        destination_address: initialReport.destination_address || '',
+        one_way_distance_km: initialReport.one_way_distance_km ?? '',
+        num_nights: initialReport.num_nights || 1,
+        business_content: initialReport.business_content || '',
+        transport_methods: initialReport.transport_methods || [],
+        driving_distance_km: initialReport.driving_distance_km || 0,
+        highway_fee: initialReport.highway_fee || 0,
+        parking_fee: initialReport.parking_fee || 0,
+        taxi_fee: initialReport.taxi_fee || 0,
+        other_transport_fee: initialReport.other_transport_fee || 0,
+        shinkansen_reason: initialReport.shinkansen_reason || '',
+        remarks: initialReport.remarks || '',
+      };
+    }
+    return {
+      start_date: '', end_date: '',
+      destination_name: '', destination_address: '',
+      one_way_distance_km: '',
+      num_nights: 1,
+      business_content: '',
+      transport_methods: [],
+      driving_distance_km: 0,
+      highway_fee: 0, parking_fee: 0, taxi_fee: 0,
+      other_transport_fee: 0, shinkansen_reason: '', remarks: '',
+    };
   });
   const [errors, setErrors] = useState({});
   const [generating, setGenerating] = useState(false);
   const [generatedReport, setGeneratedReport] = useState(null);
   const [saving, setSaving] = useState(false);
+
+  // 領収書 AI 仕分け（A4 で展開）
+  const onAmountParsed = (mapKey, amount) => {
+    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
+  };
+  const {
+    receipts,
+    handleReceiptUpload,
+    removeReceipt,
+    isUploading,
+    isAnalyzing,
+    receiptUrls,
+  } = useReceiptParser({
+    initialReceiptUrls: mode === 'edit' && initialReport?.receipt_urls ? initialReport.receipt_urls : [],
+    categoryMap: CATEGORY_MAP_TRIP,
+    fallbackKey: FALLBACK_TRIP,
+    onAmountParsed,
+  });
 
   const hasCar = form.transport_methods.includes('マイカー');
   const numDays = form.start_date && form.end_date
@@ -71,7 +121,9 @@ export default function OvernightTripForm({ onBack }) {
         report_type: '宿泊出張',
         start_date: form.start_date,
       });
-      const conflicting = existing.filter(r => r.status !== '差戻し');
+      const conflicting = existing
+        .filter(r => r.id !== initialReport?.id)  // edit 時は自身を除外
+        .filter(r => r.status !== '差戻し');
       if (conflicting.length > 0) {
         setErrors(prev => ({ ...prev, start_date: '同一開始日に既に宿泊出張レポートが存在します（1日1件まで）' }));
         return;
@@ -79,7 +131,7 @@ export default function OvernightTripForm({ onBack }) {
     }
     setGenerating(true);
     try {
-      const reportData = { ...form, report_type: '宿泊出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, car_allowance: carAllowance, total_amount: totalAmount };
+      const reportData = { ...form, report_type: '宿泊出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, car_allowance: carAllowance, total_amount: totalAmount, receipt_urls: receiptUrls };
       const result = await generateReport(reportData, user, policy);
       setGeneratedReport(result);
     } finally { setGenerating(false); }
@@ -90,16 +142,28 @@ export default function OvernightTripForm({ onBack }) {
     try {
       const data = {
         ...form, report_type: '宿泊出張', status,
-        report_number: `RPT-${Date.now().toString().slice(-8)}`,
-        created_by_name: user?.full_name, created_by_email: user?.email,
+        report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
+        created_by_name: mode === 'edit' ? initialReport.created_by_name : user?.full_name,
+        created_by_email: mode === 'edit' ? initialReport.created_by_email : user?.email,
         num_days: numDays, daily_allowance: dailyAllowance,
         accommodation_fee: accommodationFee, car_allowance: carAllowance,
         total_amount: totalAmount,
         one_way_distance_km: parseFloat(form.one_way_distance_km),
-        generated_report_text: generatedReport?.reportText || '',
-        generated_settlement_text: generatedReport?.settlementText || '',
+        receipt_urls: receiptUrls,
+        generated_report_text: generatedReport?.reportText || initialReport?.generated_report_text || '',
+        generated_settlement_text: generatedReport?.settlementText || initialReport?.generated_settlement_text || '',
       };
-      const saved = await base44.entities.Report.create(data);
+      let saved;
+      if (mode === 'edit') {
+        await base44.entities.Report.update(initialReport.id, data);
+        saved = { id: initialReport.id };
+      } else {
+        saved = await base44.entities.Report.create(data);
+      }
+      // 申請通知（throw しない、status 遷移を破壊しない）
+      if (status === '申請中') {
+        await notifySubmitted({ report: { ...data, id: saved.id } });
+      }
       navigate(`/reports/${saved.id}`);
     } finally { setSaving(false); }
   };
@@ -107,7 +171,7 @@ export default function OvernightTripForm({ onBack }) {
   if (generatedReport) {
     return <ReportPreview report={generatedReport} onBack={() => setGeneratedReport(null)}
       onSaveDraft={() => handleSubmit('下書き')} onSubmit={() => handleSubmit('申請中')}
-      saving={saving} totalAmount={totalAmount} />;
+      saving={saving} totalAmount={totalAmount} receiptUrls={receiptUrls} />;
   }
 
   return (
@@ -179,6 +243,18 @@ export default function OvernightTripForm({ onBack }) {
           <CardHeader className="pb-4"><CardTitle className="text-base">備考（任意）</CardTitle></CardHeader>
           <CardContent>
             <FormTextarea placeholder="その他の備考" value={form.remarks} onChange={e => set('remarks', e.target.value)} />
+          </CardContent>
+        </Card>
+        <Card className="border-0 shadow-sm">
+          <CardHeader className="pb-4"><CardTitle className="text-base">領収書（任意）</CardTitle></CardHeader>
+          <CardContent>
+            <ReceiptUploaderSection
+              receipts={receipts}
+              handleReceiptUpload={handleReceiptUpload}
+              removeReceipt={removeReceipt}
+              isUploading={isUploading}
+              isAnalyzing={isAnalyzing}
+            />
           </CardContent>
         </Card>
         <AmountSummary

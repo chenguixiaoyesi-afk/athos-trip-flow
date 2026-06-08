@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { notifySubmitted } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, Send, Trash2, Loader2, Clock, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Send, Trash2, Loader2, Clock, CheckCircle, XCircle, AlertCircle, Pencil } from 'lucide-react';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 
@@ -69,6 +70,10 @@ export default function ReportDetail() {
     setSubmitting(true);
     await base44.entities.Report.update(id, { status: '申請中' });
     setReport(prev => ({ ...prev, status: '申請中' }));
+    // 申請通知（throw しない、ヘルパー内で吸収）
+    if (report) {
+      await notifySubmitted({ report: { ...report, status: '申請中', id } });
+    }
     setSubmitting(false);
   };
 
@@ -103,6 +108,14 @@ export default function ReportDetail() {
         <div className="flex items-center gap-2">
           {canEdit && (
             <>
+              <Button
+                variant="outline"
+                onClick={() => navigate(`/reports/${id}/edit`)}
+                className="gap-2"
+              >
+                <Pencil className="w-4 h-4" />
+                編集する
+              </Button>
               {(report.status === '下書き' || report.status === '差戻し') && (
                 <Button onClick={handleSubmit} disabled={submitting}
                   className="bg-[#1a237e] hover:bg-[#1a237e]/90 text-white gap-2">
