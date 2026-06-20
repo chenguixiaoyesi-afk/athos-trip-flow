@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Plane, BedDouble, Globe, MapPin, ChevronRight } from 'lucide-react';
 import DayTripForm from '@/components/forms/DayTripForm';
 import OvernightTripForm from '@/components/forms/OvernightTripForm';
@@ -43,7 +42,6 @@ const REPORT_TYPES = [
 
 export default function ReportNew() {
   const [selectedType, setSelectedType] = useState(null);
-  const navigate = useNavigate();
 
   if (selectedType === '日帰り出張') return <DayTripForm onBack={() => setSelectedType(null)} />;
   if (selectedType === '宿泊出張') return <OvernightTripForm onBack={() => setSelectedType(null)} />;
