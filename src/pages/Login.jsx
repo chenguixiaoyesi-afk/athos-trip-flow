@@ -20,7 +20,7 @@ export default function Login() {
     try {
       await base44.auth.loginViaEmailPassword(email, password);
       window.location.href = '/';
-    } catch (err) {
+    } catch {
       setError('メールアドレスまたはパスワードが正しくありません');
     } finally {
       setLoading(false);

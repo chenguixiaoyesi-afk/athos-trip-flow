@@ -63,7 +63,6 @@ export default function ReportDetail() {
   }, [id]);
 
   const isOwner = report?.created_by_id === user?.id;
-  const isAdmin = user?.role === 'admin';
   const canEdit = isOwner && (report?.status === '下書き' || report?.status === '差戻し');
 
   const handleSubmit = async () => {
