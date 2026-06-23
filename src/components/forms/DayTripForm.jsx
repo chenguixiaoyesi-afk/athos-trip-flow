@@ -15,6 +15,7 @@ import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
 import { useReceiptParser } from '@/hooks/useReceiptParser';
 import { notifySubmitted } from '@/lib/notifications';
+import { useFeeState } from '@/hooks/useFeeState';
 
 // 出張系（日帰り/宿泊）の経費フィールドに領収書カテゴリをマッピング
 const CATEGORY_MAP_TRIP = {
@@ -39,10 +40,6 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
         business_content: initialReport.business_content || '',
         transport_methods: initialReport.transport_methods || [],
         driving_distance_km: initialReport.driving_distance_km || 0,
-        highway_fee: initialReport.highway_fee || 0,
-        parking_fee: initialReport.parking_fee || 0,
-        taxi_fee: initialReport.taxi_fee || 0,
-        other_transport_fee: initialReport.other_transport_fee || 0,
         remarks: initialReport.remarks || '',
       };
     }
@@ -54,10 +51,6 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
       business_content: '',
       transport_methods: [],
       driving_distance_km: 0,
-      highway_fee: 0,
-      parking_fee: 0,
-      taxi_fee: 0,
-      other_transport_fee: 0,
       remarks: '',
     };
   });
@@ -66,10 +59,19 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
   const [generatedReport, setGeneratedReport] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // Task I: 手入力分と領収書認識分を別管理（合算は feeTotal / combinedFees）
+  const { manualFees, setManualFee, addReceiptFee, feeTotal, combinedFees } = useFeeState(
+    ['highway_fee', 'parking_fee', 'taxi_fee', 'other_transport_fee'],
+    mode === 'edit' && initialReport ? {
+      highway_fee: initialReport.highway_fee || 0,
+      parking_fee: initialReport.parking_fee || 0,
+      taxi_fee: initialReport.taxi_fee || 0,
+      other_transport_fee: initialReport.other_transport_fee || 0,
+    } : {},
+  );
+
   // 領収書 AI 仕分け（A4 で展開）
-  const onAmountParsed = (mapKey, amount) => {
-    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
-  };
+  const onAmountParsed = (mapKey, amount) => addReceiptFee(mapKey, amount);
   const {
     receipts,
     handleReceiptUpload,
@@ -88,8 +90,8 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
   const dailyAllowance = policy.daily_allowance_daytrip;
   const carAllowance = hasCar ? (form.driving_distance_km || 0) * policy.car_allowance_per_km : 0;
   const totalAmount = dailyAllowance + carAllowance +
-    (form.highway_fee || 0) + (form.parking_fee || 0) +
-    (form.taxi_fee || 0) + (form.other_transport_fee || 0);
+    feeTotal('highway_fee') + feeTotal('parking_fee') +
+    feeTotal('taxi_fee') + feeTotal('other_transport_fee');
 
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
@@ -100,9 +102,6 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
     if (!form.destination_address) e.destination_address = '所在地を入力してください';
     if (!form.one_way_distance_km || parseFloat(form.one_way_distance_km) < policy.min_distance_km) {
       e.one_way_distance_km = `片道距離は${policy.min_distance_km}km以上である必要があります`;
-    }
-    if (!form.business_content || form.business_content.length < 50) {
-      e.business_content = '業務内容は50文字以上入力してください';
     }
     if (form.transport_methods.length === 0) e.transport_methods = '交通手段を選択してください';
     if (hasCar && !form.driving_distance_km) e.driving_distance_km = '走行距離を入力してください';
@@ -130,6 +129,7 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
     try {
       const reportData = {
         ...form,
+        ...combinedFees(),
         report_type: '日帰り出張',
         daily_allowance: dailyAllowance,
         car_allowance: carAllowance,
@@ -150,6 +150,7 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
     try {
       const data = {
         ...form,
+        ...combinedFees(),
         report_type: '日帰り出張',
         status,
         report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
@@ -229,10 +230,10 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-4"><CardTitle className="text-base">業務内容</CardTitle></CardHeader>
           <CardContent>
-            <FormTextarea label="業務内容" required placeholder="具体的な業務内容を50文字以上で入力してください"
+            <FormTextarea label="業務内容" placeholder="具体的な業務内容を入力してください"
               value={form.business_content} onChange={e => set('business_content', e.target.value)}
               error={errors.business_content} />
-            <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字（最低50文字）</p>
+            <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字</p>
           </CardContent>
         </Card>
 
@@ -248,16 +249,16 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
             />
             <div className="grid grid-cols-2 gap-4 pt-2">
               <FormField label="高速道路料金（円）">
-                <Input type="number" min="0" value={form.highway_fee || ''} onChange={e => set('highway_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
+                <Input type="number" min="0" value={manualFees.highway_fee || ''} onChange={e => setManualFee('highway_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
               </FormField>
               <FormField label="駐車場料金（円）">
-                <Input type="number" min="0" value={form.parking_fee || ''} onChange={e => set('parking_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
+                <Input type="number" min="0" value={manualFees.parking_fee || ''} onChange={e => setManualFee('parking_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
               </FormField>
               <FormField label="タクシー料金（円）">
-                <Input type="number" min="0" value={form.taxi_fee || ''} onChange={e => set('taxi_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
+                <Input type="number" min="0" value={manualFees.taxi_fee || ''} onChange={e => setManualFee('taxi_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
               </FormField>
               <FormField label="その他交通費（円）">
-                <Input type="number" min="0" value={form.other_transport_fee || ''} onChange={e => set('other_transport_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
+                <Input type="number" min="0" value={manualFees.other_transport_fee || ''} onChange={e => setManualFee('other_transport_fee', parseFloat(e.target.value) || 0)} placeholder="0" />
               </FormField>
             </div>
           </CardContent>
@@ -287,10 +288,10 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
           items={[
             { label: '日当', amount: dailyAllowance },
             { label: `マイカー手当（${form.driving_distance_km || 0}km × ${policy.car_allowance_per_km}円）`, amount: carAllowance },
-            { label: '高速道路料金', amount: form.highway_fee },
-            { label: '駐車場料金', amount: form.parking_fee },
-            { label: 'タクシー料金', amount: form.taxi_fee },
-            { label: 'その他交通費', amount: form.other_transport_fee },
+            { label: '高速道路料金', amount: feeTotal('highway_fee') },
+            { label: '駐車場料金', amount: feeTotal('parking_fee') },
+            { label: 'タクシー料金', amount: feeTotal('taxi_fee') },
+            { label: 'その他交通費', amount: feeTotal('other_transport_fee') },
           ]}
           total={totalAmount}
         />
