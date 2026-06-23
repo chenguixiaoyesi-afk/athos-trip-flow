@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
-import { FilePlus, TrendingUp, Calendar, Briefcase, Clock, CheckCircle, XCircle, AlertCircle, ChevronRight } from 'lucide-react';
+import { buildScopedFilter, can } from '@/lib/tenantScope';
+import { buildCompanyBreakdown } from '@/lib/aggregation';
+import { FilePlus, TrendingUp, Calendar, Briefcase, Clock, CheckCircle, XCircle, AlertCircle, ChevronRight, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
@@ -23,24 +25,30 @@ const TYPE_COLORS = {
 };
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, tenant, companies, selectedCompanyId, effectiveCompanyId } = useAuth();
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const isAdmin = user?.role === 'admin';
+  // A13: 会社全体を見られるか（reportViewAll）。member は自分のレポートのみ。
+  const isAdmin = can(tenant, 'reportViewAll');
+  // A12.5: 会社横断できる systemOwner か（会社別集計を全社で出すか自社のみか）。
+  const canSwitchCompany = can(tenant, 'companySwitch');
 
   useEffect(() => {
     loadReports();
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant]);
 
   const loadReports = async () => {
+    // 無所属（fail-closed）は何も取得しない。本来はルートガードで遮断済み。
+    if (!tenant) { setReports([]); setLoading(false); return; }
     try {
-      let data;
-      if (isAdmin) {
-        data = await base44.entities.Report.list('-created_date', 50);
-      } else {
-        data = await base44.entities.Report.filter({ created_by_id: user?.id }, '-created_date', 50);
-      }
+      // reportViewAll 保有者は自社全件（systemOwner は全社/選択会社）、member は自分の作成分のみ。
+      const scoped = isAdmin
+        ? buildScopedFilter(tenant, {})
+        : buildScopedFilter(tenant, { created_by_id: user?.id });
+      // A12.5: 会社別集計と今月カードの精度のため取得上限を引き上げ（支給管理と同じ 500）。
+      const data = await base44.entities.Report.filter(scoped, '-created_date', 500);
       setReports(data || []);
     } catch (e) {
       console.error(e);
@@ -64,6 +72,25 @@ export default function Dashboard() {
 
   const pendingReports = reports.filter(r => r.status === '申請中');
   const recentReports = reports.slice(0, 10);
+
+  // A12.5: 会社別集計（systemOwner=全社 or 選択会社 / companyAdmin・manager=自社 1 行 / member=非表示）。
+  // 対象会社を role で絞ってから集計する（全社マスタをそのまま渡すと自社以外が 0 行で並ぶため）。
+  const breakdownCompanies = !isAdmin
+    ? []
+    : canSwitchCompany
+      ? (selectedCompanyId
+          ? (companies || []).filter(c => c.id === selectedCompanyId)
+          : (companies || []))
+      : (companies || []).filter(c => c.id === effectiveCompanyId);
+  const companyBreakdown = buildCompanyBreakdown(reports, breakdownCompanies);
+  // 複数社表示時の合計行（全社横断の systemOwner 向け）。
+  const breakdownTotals = companyBreakdown.reduce((acc, c) => ({
+    appliedCount: acc.appliedCount + c.appliedCount,
+    approvedCount: acc.approvedCount + c.approvedCount,
+    totalPayment: acc.totalPayment + c.totalPayment,
+    totalAllowance: acc.totalAllowance + c.totalAllowance,
+    totalExpense: acc.totalExpense + c.totalExpense,
+  }), { appliedCount: 0, approvedCount: 0, totalPayment: 0, totalAllowance: 0, totalExpense: 0 });
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -124,6 +151,56 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* A12.5: 会社別集計（reportViewAll 以上のみ。member は非表示。systemOwner=全社/選択会社、companyAdmin・manager=自社） */}
+      {isAdmin && companyBreakdown.length > 0 && (
+        <Card className="border-0 shadow-sm mb-8">
+          <CardHeader className="pb-3 border-b">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-[#1a237e]" />
+              <CardTitle className="text-base font-semibold">会社別集計</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">会社</th>
+                  <th className="text-right px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">申請件数</th>
+                  <th className="text-right px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">承認件数</th>
+                  <th className="text-right px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">支給額</th>
+                  <th className="text-right px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">手当額</th>
+                  <th className="text-right px-4 py-3 text-muted-foreground font-medium whitespace-nowrap">実費額</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {companyBreakdown.map(c => (
+                  <tr key={c.company_id} className="hover:bg-muted/20">
+                    <td className="px-4 py-3 font-medium whitespace-nowrap">{c.company_name || '—'}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">{c.appliedCount}件</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">{c.approvedCount}件</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{c.totalPayment.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{c.totalAllowance.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{c.totalExpense.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+              {companyBreakdown.length > 1 && (
+                <tfoot className="border-t bg-muted/30">
+                  <tr className="font-semibold">
+                    <td className="px-4 py-3 whitespace-nowrap">合計</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">{breakdownTotals.appliedCount}件</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">{breakdownTotals.approvedCount}件</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{breakdownTotals.totalPayment.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{breakdownTotals.totalAllowance.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">¥{breakdownTotals.totalExpense.toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 差戻し通知 */}
       {reports.filter(r => r.status === '差戻し').length > 0 && (

@@ -2,6 +2,10 @@
   "name": "Report",
   "type": "object",
   "properties": {
+    "company_id": {
+      "type": "string",
+      "description": "所属会社（Company.id）。アプリ層スコープ（buildScopedFilter）の正本キー。A12.5 で RLS は使用しない"
+    },
     "report_number": {
       "type": "string",
       "description": "\u30ec\u30dd\u30fc\u30c8ID\uff08\u81ea\u52d5\u63a1\u756a\uff09"

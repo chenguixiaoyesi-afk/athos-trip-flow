@@ -15,6 +15,12 @@
 //
 // 引数名は `currentPolicy` / `sourcePolicy` / `targetPolicy`（`policy` シャドー回避、
 // verdict-A7 §6.2 改善「変数シャドー自己チェック」適用）。
+//
+// A11: 手当（日当 / 宿泊費 / 車手当）の計算は allowanceCalculator.calcAllowances に集約。
+// 本ファイルは実費合算 + 総額の組み立てに専念し、手当計算式の二重定義を解消する。
+// 既存の種別別計算結果（および policyImpactAnalyzer.test.js）は不変。
+
+import { calcAllowances } from './allowanceCalculator.js';
 
 /**
  * 規程値依存の計算値（日当・宿泊費・車手当）を report の元データから再計算する純粋関数。
@@ -33,30 +39,19 @@ export function recomputeReportPolicyValues(report, currentPolicy) {
     return { daily_allowance: 0, accommodation_fee: 0, car_allowance: 0, total_amount: 0 };
   }
 
-  const type = report.report_type;
-  let daily_allowance = 0;
-  let accommodation_fee = 0;
-  let car_allowance = 0;
-
-  if (type === '日帰り出張') {
-    daily_allowance = currentPolicy.daily_allowance_daytrip || 0;
-    car_allowance = (report.driving_distance_km || 0) * (currentPolicy.car_allowance_per_km || 0);
-  } else if (type === '宿泊出張') {
-    const days = report.num_days || 1;
-    const nights = report.num_nights || 0;
-    daily_allowance = (currentPolicy.daily_allowance_overnight || 0) * days;
-    accommodation_fee = (currentPolicy.accommodation_domestic || 0) * nights;
-    car_allowance = (report.driving_distance_km || 0) * (currentPolicy.car_allowance_per_km || 0);
-  } else if (type === '海外出張') {
-    const days = report.num_days || 1;
-    const nights = report.num_nights || 0;
-    daily_allowance = (currentPolicy.daily_allowance_overseas || 0) * days;
-    accommodation_fee = (currentPolicy.accommodation_overseas || 0) * nights;
-    // 海外出張は車手当なし
-  } else if (type === '外出作業') {
-    car_allowance = (report.driving_distance_km || 0) * (currentPolicy.car_allowance_per_km || 0);
-    // 外出作業は日当・宿泊費なし
-  }
+  // 手当（日当 / 宿泊費 / 車手当）は allowanceCalculator に委譲（種別ルールは §6.2 と一致）。
+  // analyzer は report に hasCar を持たないため、距離があれば車手当を計上する従来挙動を
+  // hasCar: true で再現する（海外出張は calculator 側で車手当 0 のため影響なし）。
+  const { daily_allowance, accommodation_fee, car_allowance } = calcAllowances({
+    reportType: report.report_type,
+    quantities: {
+      numDays: report.num_days,
+      numNights: report.num_nights,
+      drivingKm: report.driving_distance_km,
+      hasCar: true,
+    },
+    policy: currentPolicy,
+  });
 
   // 実費合計（規程値非依存、report 値をそのまま使用）
   const actuals =

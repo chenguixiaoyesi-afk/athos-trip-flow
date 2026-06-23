@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { usePolicy } from '@/lib/policyContext';
+import { useAuth } from '@/lib/AuthContext';
+import { buildScopedFilter, stampCompanyId } from '@/lib/tenantScope';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,6 +15,7 @@ import { computeImpact } from '@/lib/policyImpactAnalyzer';
 
 export default function PolicyManagement() {
   const { policy, setPolicy } = usePolicy();
+  const { tenant } = useAuth();
   const [policies, setPolicies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploadingPdf, setUploadingPdf] = useState(false);
@@ -35,10 +38,16 @@ export default function PolicyManagement() {
 
   useEffect(() => {
     loadPolicies();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant]);
 
   const loadPolicies = async () => {
-    const data = await base44.entities.TravelPolicyMaster.list('-created_date', 20);
+    // 無所属（fail-closed）は何も取得しない。本来はルートガードで遮断済み。
+    if (!tenant) { setPolicies([]); setLoading(false); return; }
+    // 自社規程のみ（systemOwner は全社/選択会社）。最終強制はサーバ RLS。
+    const data = await base44.entities.TravelPolicyMaster.filter(
+      buildScopedFilter(tenant, {}), '-created_date', 20
+    );
     setPolicies(data || []);
     setLoading(false);
   };
@@ -137,7 +146,8 @@ export default function PolicyManagement() {
         ...(analyzedPolicy || {}),
       };
       delete data.summary;
-      await base44.entities.TravelPolicyMaster.create(data);
+      // A13: 書込時に company_id を必ず付与（RLS create 一致 / systemOwner は selected||home）。
+      await base44.entities.TravelPolicyMaster.create(stampCompanyId(tenant, data));
       setForm({ version: '', effective_date: '', policy_content: '' });
       setPdfUrl('');
       setAnalyzedPolicy(null);
@@ -156,9 +166,10 @@ export default function PolicyManagement() {
     setImpactLoading(true);
     setImpactResult(null);
     try {
-      // 承認済の Report 全件を取得（500 件まで、Summary / 月次配信と同方針）
+      // 承認済の Report 全件を取得（500 件まで、Summary / 月次配信と同方針）。
+      // A13: 自社スコープを注入（systemOwner は全社/選択会社）。最終強制はサーバ RLS。
       const approvedReports = await base44.entities.Report.filter(
-        { status: '承認済' },
+        buildScopedFilter(tenant, { status: '承認済' }),
         '-created_date',
         500,
       );
