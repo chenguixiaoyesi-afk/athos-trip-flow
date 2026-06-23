@@ -13,6 +13,7 @@ import ReceiptUploaderSection from './ReceiptUploaderSection';
 import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
 import { useReceiptParser } from '@/hooks/useReceiptParser';
+import { useFeeState } from '@/hooks/useFeeState';
 import { notifySubmitted } from '@/lib/notifications';
 import { differenceInDays } from 'date-fns';
 
@@ -38,9 +39,6 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
         city_name: initialReport.city_name || '',
         num_nights: initialReport.num_nights || 1,
         business_content: initialReport.business_content || '',
-        flight_fee: initialReport.flight_fee || 0,
-        airport_transport_fee: initialReport.airport_transport_fee || 0,
-        other_transport_fee: initialReport.other_transport_fee || 0,
         remarks: initialReport.remarks || '',
       };
     }
@@ -49,7 +47,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
       country_name: '', city_name: '',
       num_nights: 1,
       business_content: '',
-      flight_fee: 0, airport_transport_fee: 0, other_transport_fee: 0, remarks: '',
+      remarks: '',
     };
   });
   const [errors, setErrors] = useState({});
@@ -57,10 +55,18 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
   const [generatedReport, setGeneratedReport] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  // 領収書 AI 仕分け（A4 で展開）
-  const onAmountParsed = (mapKey, amount) => {
-    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
-  };
+  // Task I 案A: 手入力分(manualFees)と領収書認識分(receiptFees)を別管理し合算する
+  const { manualFees, setManualFee, addReceiptFee, feeTotal, combinedFees } = useFeeState(
+    ['flight_fee', 'airport_transport_fee', 'other_transport_fee'],
+    mode === 'edit' && initialReport ? {
+      flight_fee: initialReport.flight_fee || 0,
+      airport_transport_fee: initialReport.airport_transport_fee || 0,
+      other_transport_fee: initialReport.other_transport_fee || 0,
+    } : {},
+  );
+
+  // 領収書 AI 仕分け（A4 で展開）: 認識額は receiptFees へ加算（順序非依存）
+  const onAmountParsed = (mapKey, amount) => addReceiptFee(mapKey, amount);
   const {
     receipts,
     handleReceiptUpload,
@@ -80,7 +86,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
   const dailyAllowance = numDays * policy.daily_allowance_overseas;
   const accommodationFee = (form.num_nights || 1) * policy.accommodation_overseas;
   const totalAmount = dailyAllowance + accommodationFee +
-    (form.flight_fee || 0) + (form.airport_transport_fee || 0) + (form.other_transport_fee || 0);
+    feeTotal('flight_fee') + feeTotal('airport_transport_fee') + feeTotal('other_transport_fee');
 
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
@@ -90,7 +96,6 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
     if (!form.end_date) e.end_date = '終了日を入力してください';
     if (!form.country_name) e.country_name = '国名を入力してください';
     if (!form.city_name) e.city_name = '都市名を入力してください';
-    if (!form.business_content || form.business_content.length < 50) e.business_content = '業務内容は50文字以上入力してください';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -113,7 +118,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
     }
     setGenerating(true);
     try {
-      const reportData = { ...form, report_type: '海外出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, total_amount: totalAmount, receipt_urls: receiptUrls };
+      const reportData = { ...form, ...combinedFees(), report_type: '海外出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, total_amount: totalAmount, receipt_urls: receiptUrls };
       const result = await generateReport(reportData, user, policy);
       setGeneratedReport(result);
     } finally { setGenerating(false); }
@@ -123,7 +128,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
     setSaving(true);
     try {
       const data = {
-        ...form, report_type: '海外出張', status,
+        ...form, ...combinedFees(), report_type: '海外出張', status,
         report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
         created_by_name: mode === 'edit' ? initialReport.created_by_name : user?.full_name,
         created_by_email: mode === 'edit' ? initialReport.created_by_email : user?.email,
@@ -184,7 +189,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-4"><CardTitle className="text-base">業務内容</CardTitle></CardHeader>
           <CardContent>
-            <FormTextarea label="業務内容（各日50文字以上）" required placeholder="具体的な業務内容を入力してください"
+            <FormTextarea label="業務内容" placeholder="具体的な業務内容を入力してください"
               value={form.business_content} onChange={e => set('business_content', e.target.value)} error={errors.business_content} />
             <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字</p>
           </CardContent>
@@ -195,7 +200,7 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {[['flight_fee','航空券代'], ['airport_transport_fee','空港までの交通費'], ['other_transport_fee','その他交通費']].map(([key, label]) => (
                 <FormField key={key} label={`${label}（円）`}>
-                  <Input type="number" min="0" value={form[key] || ''} onChange={e => set(key, parseFloat(e.target.value) || 0)} placeholder="0" />
+                  <Input type="number" min="0" value={manualFees[key] || ''} onChange={e => setManualFee(key, parseFloat(e.target.value) || 0)} placeholder="0" />
                 </FormField>
               ))}
             </div>
@@ -223,9 +228,9 @@ export default function OverseasTripForm({ onBack, mode = 'create', initialRepor
           items={[
             { label: `日当（${policy.daily_allowance_overseas.toLocaleString()}円 × ${numDays}日）`, amount: dailyAllowance },
             { label: `宿泊費（${policy.accommodation_overseas.toLocaleString()}円 × ${form.num_nights}泊）`, amount: accommodationFee },
-            { label: '航空券代', amount: form.flight_fee },
-            { label: '空港までの交通費', amount: form.airport_transport_fee },
-            { label: 'その他交通費', amount: form.other_transport_fee },
+            { label: '航空券代', amount: feeTotal('flight_fee') },
+            { label: '空港までの交通費', amount: feeTotal('airport_transport_fee') },
+            { label: 'その他交通費', amount: feeTotal('other_transport_fee') },
           ]}
           total={totalAmount}
         />

@@ -14,6 +14,7 @@ import ReceiptUploaderSection from './ReceiptUploaderSection';
 import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
 import { useReceiptParser } from '@/hooks/useReceiptParser';
+import { useFeeState } from '@/hooks/useFeeState';
 import { notifySubmitted } from '@/lib/notifications';
 
 // 外出作業フォーム用カテゴリ→経費フィールドマッピング
@@ -94,11 +95,6 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
         business_content: initialReport.business_content || '',
         transport_methods: initialReport.transport_methods || [],
         driving_distance_km: initialReport.driving_distance_km || 0,
-        coworking_fee: initialReport.coworking_fee || 0,
-        wifi_fee: initialReport.wifi_fee || 0,
-        parking_fee: initialReport.parking_fee || 0,
-        meal_fee: initialReport.meal_fee || 0,
-        other_work_fee: initialReport.other_work_fee || 0,
         remarks: initialReport.remarks || '',
       };
     }
@@ -111,19 +107,32 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
       business_content: '',
       transport_methods: savedDefaults.transport_methods || [],
       driving_distance_km: savedDefaults.driving_distance_km || 0,
+      remarks: '',
+    };
+  });
+  // Task I 案A: 手入力分(manualFees)と領収書認識分(receiptFees)を別管理し合算する。
+  // edit → 既存fee項目をmanualFees初期値（過去内訳は復元しない）。
+  // create → localStorage の記憶分（コワーキング/Wi-Fi/駐車場）をmanualFees初期値。
+  const { manualFees, setManualFee, addReceiptFee, feeTotal, combinedFees } = useFeeState(
+    ['coworking_fee', 'wifi_fee', 'parking_fee', 'meal_fee', 'other_work_fee'],
+    mode === 'edit' && initialReport ? {
+      coworking_fee: initialReport.coworking_fee || 0,
+      wifi_fee: initialReport.wifi_fee || 0,
+      parking_fee: initialReport.parking_fee || 0,
+      meal_fee: initialReport.meal_fee || 0,
+      other_work_fee: initialReport.other_work_fee || 0,
+    } : {
       coworking_fee: savedDefaults.coworking_fee || 0,
       wifi_fee: savedDefaults.wifi_fee || 0,
       parking_fee: savedDefaults.parking_fee || 0,
       meal_fee: 0,
       other_work_fee: 0,
-      remarks: '',
-    };
-  });
+    },
+  );
+
   // 領収書 AI 仕分けは useReceiptParser に集約（A4 で抽出）。
-  // edit モード時は initialReceiptUrls 経由で復元。
-  const onAmountParsed = (mapKey, amount) => {
-    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
-  };
+  // edit モード時は initialReceiptUrls 経由で復元。認識額は receiptFees へ加算（順序非依存）。
+  const onAmountParsed = (mapKey, amount) => addReceiptFee(mapKey, amount);
   const {
     receipts,
     handleReceiptUpload,
@@ -144,7 +153,7 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
 
   const hasCar = form.transport_methods.includes('マイカー');
   const carAllowance = hasCar ? (form.driving_distance_km || 0) * policy.car_allowance_per_km : 0;
-  const workOnlyExpense = (form.coworking_fee || 0) + (form.wifi_fee || 0) + (form.parking_fee || 0) + (form.meal_fee || 0) + (form.other_work_fee || 0);
+  const workOnlyExpense = feeTotal('coworking_fee') + feeTotal('wifi_fee') + feeTotal('parking_fee') + feeTotal('meal_fee') + feeTotal('other_work_fee');
   // 外出作業費合計 = 実費 + マイカー手当
   const totalWorkExpense = workOnlyExpense;
   const totalAmount = carAllowance + totalWorkExpense;
@@ -159,6 +168,7 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
   // Persist useful defaults on every form change
+  // Task I 案A: 経費は手入力分(manualFees)のみ記憶する（領収書認識分は記憶しない）
   useEffect(() => {
     const defaults = {
       destination_name: form.destination_name,
@@ -167,12 +177,12 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
       work_end_time: form.work_end_time,
       transport_methods: form.transport_methods,
       driving_distance_km: form.driving_distance_km,
-      coworking_fee: form.coworking_fee,
-      wifi_fee: form.wifi_fee,
-      parking_fee: form.parking_fee,
+      coworking_fee: manualFees.coworking_fee,
+      wifi_fee: manualFees.wifi_fee,
+      parking_fee: manualFees.parking_fee,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
-  }, [form]);
+  }, [form, manualFees]);
 
   const validate = () => {
     const e = {};
@@ -185,7 +195,6 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
     if (form.work_start_time && form.work_end_time && hours < policy.min_work_hours) {
       e.work_time = `4時間以上の作業が必要です（現在: ${hours.toFixed(1)}時間）`;
     }
-    if (!form.business_content || form.business_content.length < 50) e.business_content = '業務内容は50文字以上入力してください';
     if (form.transport_methods.length === 0) e.transport_methods = '交通手段を選択してください';
     if (workOnlyExpense > policy.max_work_expense) e.expense_limit = `上限5,000円を超えています（現在: ¥${workOnlyExpense.toLocaleString()}）`;
     // 領収書は任意（実費申請がある場合のみ推奨）
@@ -213,6 +222,7 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
     try {
       const reportData = {
         ...form,
+        ...combinedFees(),
         report_type: '外出作業',
         car_allowance: carAllowance,
         total_work_expense: totalWorkExpense,
@@ -228,7 +238,7 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
     setSaving(true);
     try {
       const data = {
-        ...form, report_type: '外出作業', status,
+        ...form, ...combinedFees(), report_type: '外出作業', status,
         report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
         created_by_name: mode === 'edit' ? initialReport.created_by_name : user?.full_name,
         created_by_email: mode === 'edit' ? initialReport.created_by_email : user?.email,
@@ -326,10 +336,10 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-4"><CardTitle className="text-base">業務内容</CardTitle></CardHeader>
           <CardContent>
-            <FormTextarea label="業務内容" required placeholder="具体的な業務内容を50文字以上で入力してください"
+            <FormTextarea label="業務内容" placeholder="具体的な業務内容を入力してください"
               value={form.business_content} onChange={e => set('business_content', e.target.value)}
               error={errors.business_content} />
-            <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字（最低50文字）</p>
+            <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字</p>
           </CardContent>
         </Card>
 
@@ -368,8 +378,8 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
               ].map(([key, label]) => (
                 <FormField key={key} label={label}>
                   <Input type="number" min="0"
-                    value={form[key] || ''}
-                    onChange={e => set(key, parseFloat(e.target.value) || 0)}
+                    value={manualFees[key] || ''}
+                    onChange={e => setManualFee(key, parseFloat(e.target.value) || 0)}
                     placeholder="0" />
                 </FormField>
               ))}
@@ -407,11 +417,11 @@ export default function FieldworkForm({ onBack, mode = 'create', initialReport =
         <AmountSummary
           items={[
             { label: `マイカー手当（${form.driving_distance_km || 0}km × ${policy.car_allowance_per_km}円）`, amount: carAllowance },
-            { label: 'コワーキング/貸会議室', amount: form.coworking_fee },
-            { label: 'Wi-Fi/通信費', amount: form.wifi_fee },
-            { label: '駐車場料金', amount: form.parking_fee },
-            { label: '飲食代', amount: form.meal_fee },
-            { label: 'その他業務関連費', amount: form.other_work_fee },
+            { label: 'コワーキング/貸会議室', amount: feeTotal('coworking_fee') },
+            { label: 'Wi-Fi/通信費', amount: feeTotal('wifi_fee') },
+            { label: '駐車場料金', amount: feeTotal('parking_fee') },
+            { label: '飲食代', amount: feeTotal('meal_fee') },
+            { label: 'その他業務関連費', amount: feeTotal('other_work_fee') },
           ]}
           total={totalAmount}
         />

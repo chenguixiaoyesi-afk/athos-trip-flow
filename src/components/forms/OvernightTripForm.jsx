@@ -15,6 +15,7 @@ import { generateReport } from '@/lib/reportGenerator';
 import ReportPreview from '@/components/ReportPreview';
 import { useReceiptParser } from '@/hooks/useReceiptParser';
 import { notifySubmitted } from '@/lib/notifications';
+import { useFeeState } from '@/hooks/useFeeState';
 import { differenceInDays } from 'date-fns';
 
 // 出張系の経費フィールドに領収書カテゴリをマッピング（DayTrip と共通構造）
@@ -42,10 +43,6 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
         business_content: initialReport.business_content || '',
         transport_methods: initialReport.transport_methods || [],
         driving_distance_km: initialReport.driving_distance_km || 0,
-        highway_fee: initialReport.highway_fee || 0,
-        parking_fee: initialReport.parking_fee || 0,
-        taxi_fee: initialReport.taxi_fee || 0,
-        other_transport_fee: initialReport.other_transport_fee || 0,
         shinkansen_reason: initialReport.shinkansen_reason || '',
         remarks: initialReport.remarks || '',
       };
@@ -58,8 +55,7 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
       business_content: '',
       transport_methods: [],
       driving_distance_km: 0,
-      highway_fee: 0, parking_fee: 0, taxi_fee: 0,
-      other_transport_fee: 0, shinkansen_reason: '', remarks: '',
+      shinkansen_reason: '', remarks: '',
     };
   });
   const [errors, setErrors] = useState({});
@@ -67,10 +63,19 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
   const [generatedReport, setGeneratedReport] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // Task I: 手入力分と領収書認識分を別管理（合算は feeTotal / combinedFees）
+  const { manualFees, setManualFee, addReceiptFee, feeTotal, combinedFees } = useFeeState(
+    ['highway_fee', 'parking_fee', 'taxi_fee', 'other_transport_fee'],
+    mode === 'edit' && initialReport ? {
+      highway_fee: initialReport.highway_fee || 0,
+      parking_fee: initialReport.parking_fee || 0,
+      taxi_fee: initialReport.taxi_fee || 0,
+      other_transport_fee: initialReport.other_transport_fee || 0,
+    } : {},
+  );
+
   // 領収書 AI 仕分け（A4 で展開）
-  const onAmountParsed = (mapKey, amount) => {
-    setForm(prev => ({ ...prev, [mapKey]: (prev[mapKey] || 0) + amount }));
-  };
+  const onAmountParsed = (mapKey, amount) => addReceiptFee(mapKey, amount);
   const {
     receipts,
     handleReceiptUpload,
@@ -93,8 +98,8 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
   const accommodationFee = (form.num_nights || 1) * policy.accommodation_domestic;
   const carAllowance = hasCar ? (form.driving_distance_km || 0) * policy.car_allowance_per_km : 0;
   const totalAmount = dailyAllowance + accommodationFee + carAllowance +
-    (form.highway_fee || 0) + (form.parking_fee || 0) +
-    (form.taxi_fee || 0) + (form.other_transport_fee || 0);
+    feeTotal('highway_fee') + feeTotal('parking_fee') +
+    feeTotal('taxi_fee') + feeTotal('other_transport_fee');
 
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
@@ -107,7 +112,6 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
     if (!form.one_way_distance_km || parseFloat(form.one_way_distance_km) < policy.min_distance_km) {
       e.one_way_distance_km = `片道距離は${policy.min_distance_km}km以上必要です`;
     }
-    if (!form.business_content || form.business_content.length < 50) e.business_content = '業務内容は50文字以上入力してください';
     if (form.transport_methods.length === 0) e.transport_methods = '交通手段を選択してください';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -131,7 +135,7 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
     }
     setGenerating(true);
     try {
-      const reportData = { ...form, report_type: '宿泊出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, car_allowance: carAllowance, total_amount: totalAmount, receipt_urls: receiptUrls };
+      const reportData = { ...form, ...combinedFees(), report_type: '宿泊出張', num_days: numDays, daily_allowance: dailyAllowance, accommodation_fee: accommodationFee, car_allowance: carAllowance, total_amount: totalAmount, receipt_urls: receiptUrls };
       const result = await generateReport(reportData, user, policy);
       setGeneratedReport(result);
     } finally { setGenerating(false); }
@@ -141,7 +145,7 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
     setSaving(true);
     try {
       const data = {
-        ...form, report_type: '宿泊出張', status,
+        ...form, ...combinedFees(), report_type: '宿泊出張', status,
         report_number: mode === 'edit' ? initialReport.report_number : `RPT-${Date.now().toString().slice(-8)}`,
         created_by_name: mode === 'edit' ? initialReport.created_by_name : user?.full_name,
         created_by_email: mode === 'edit' ? initialReport.created_by_email : user?.email,
@@ -216,7 +220,7 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-4"><CardTitle className="text-base">業務内容</CardTitle></CardHeader>
           <CardContent>
-            <FormTextarea label="業務内容（各日50文字以上）" required placeholder="具体的な業務内容を入力してください"
+            <FormTextarea label="業務内容" placeholder="具体的な業務内容を入力してください"
               value={form.business_content} onChange={e => set('business_content', e.target.value)} error={errors.business_content} />
             <p className="text-xs text-muted-foreground mt-1">{form.business_content.length}文字</p>
           </CardContent>
@@ -230,7 +234,7 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
             <div className="grid grid-cols-2 gap-4 pt-2">
               {[['highway_fee','高速道路料金'], ['parking_fee','駐車場料金'], ['taxi_fee','タクシー料金'], ['other_transport_fee','その他交通費']].map(([key, label]) => (
                 <FormField key={key} label={`${label}（円）`}>
-                  <Input type="number" min="0" value={form[key] || ''} onChange={e => set(key, parseFloat(e.target.value) || 0)} placeholder="0" />
+                  <Input type="number" min="0" value={manualFees[key] || ''} onChange={e => setManualFee(key, parseFloat(e.target.value) || 0)} placeholder="0" />
                 </FormField>
               ))}
             </div>
@@ -262,10 +266,10 @@ export default function OvernightTripForm({ onBack, mode = 'create', initialRepo
             { label: `日当（${policy.daily_allowance_overnight.toLocaleString()}円 × ${numDays}日）`, amount: dailyAllowance },
             { label: `宿泊費（${policy.accommodation_domestic.toLocaleString()}円 × ${form.num_nights}泊）`, amount: accommodationFee },
             { label: `マイカー手当（${form.driving_distance_km || 0}km × ${policy.car_allowance_per_km}円）`, amount: carAllowance },
-            { label: '高速道路料金', amount: form.highway_fee },
-            { label: '駐車場料金', amount: form.parking_fee },
-            { label: 'タクシー料金', amount: form.taxi_fee },
-            { label: 'その他交通費', amount: form.other_transport_fee },
+            { label: '高速道路料金', amount: feeTotal('highway_fee') },
+            { label: '駐車場料金', amount: feeTotal('parking_fee') },
+            { label: 'タクシー料金', amount: feeTotal('taxi_fee') },
+            { label: 'その他交通費', amount: feeTotal('other_transport_fee') },
           ]}
           total={totalAmount}
         />
