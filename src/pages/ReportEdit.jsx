@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { assertSameTenant } from '@/lib/tenantScope';
 import DayTripForm from '@/components/forms/DayTripForm';
 import OvernightTripForm from '@/components/forms/OvernightTripForm';
 import OverseasTripForm from '@/components/forms/OverseasTripForm';
@@ -10,16 +11,24 @@ import FieldworkForm from '@/components/forms/FieldworkForm';
 export default function ReportEdit() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // A13: テナント未確定（無所属など）は fail-closed で編集不可。
+    if (!tenant) {
+      setReport(null);
+      setLoading(false);
+      return;
+    }
     base44.entities.Report.filter({ id }).then(results => {
-      setReport(results?.[0] || null);
+      const found = results?.[0] || null;
+      // A13: 別テナントのレポートは「見つからない」扱い（UX 早期遮断。最終防御は RLS）。
+      setReport(found && assertSameTenant(tenant, found) ? found : null);
       setLoading(false);
     });
-  }, [id]);
+  }, [id, tenant]);
 
   if (loading) return <div className="p-8 text-center text-muted-foreground">読み込み中...</div>;
   if (!report) return <div className="p-8 text-center text-muted-foreground">レポートが見つかりません</div>;

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { stampCompanyId, buildScopedFilter } from '@/lib/tenantScope';
 import { usePolicy } from '@/lib/policyContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,6 +17,8 @@ import ReportPreview from '@/components/ReportPreview';
 import { useReceiptParser } from '@/hooks/useReceiptParser';
 import { notifySubmitted } from '@/lib/notifications';
 import { useFeeState } from '@/hooks/useFeeState';
+import { calcAllowances } from '@/lib/allowanceCalculator';
+import { resolvePolicy } from '@/lib/policyResolver';
 
 // 出張系（日帰り/宿泊）の経費フィールドに領収書カテゴリをマッピング
 const CATEGORY_MAP_TRIP = {
@@ -26,7 +29,7 @@ const CATEGORY_MAP_TRIP = {
 const FALLBACK_TRIP = 'other_transport_fee';
 
 export default function DayTripForm({ onBack, mode = 'create', initialReport = null }) {
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
   const { policy } = usePolicy();
   const navigate = useNavigate();
 
@@ -87,8 +90,13 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
   });
 
   const hasCar = form.transport_methods.includes('マイカー');
-  const dailyAllowance = policy.daily_allowance_daytrip;
-  const carAllowance = hasCar ? (form.driving_distance_km || 0) * policy.car_allowance_per_km : 0;
+  // A11: 手当（日当 + マイカー手当）は allowanceCalculator に集約（規程→決定論）。
+  // 実費は useFeeState（手入力 + 領収書）。出力金額は従来と完全一致。
+  const { daily_allowance: dailyAllowance, car_allowance: carAllowance } = calcAllowances({
+    reportType: '日帰り出張',
+    quantities: { drivingKm: form.driving_distance_km, hasCar },
+    policy: resolvePolicy({ policy }),
+  });
   const totalAmount = dailyAllowance + carAllowance +
     feeTotal('highway_fee') + feeTotal('parking_fee') +
     feeTotal('taxi_fee') + feeTotal('other_transport_fee');
@@ -112,11 +120,12 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
   const handleGenerate = async () => {
     if (!validate()) return;
     if (form.travel_date) {
-      const existing = await base44.entities.Report.filter({
+      // A13: 重複チェックも会社スコープ（§4.6）。created_by_id で自分に限定済みだが防御的に company_id も注入。
+      const existing = await base44.entities.Report.filter(buildScopedFilter(tenant, {
         created_by_id: user?.id,
         report_type: '日帰り出張',
         travel_date: form.travel_date,
-      });
+      }));
       const conflicting = existing
         .filter(r => r.id !== initialReport?.id)  // edit 時は自身を除外
         .filter(r => r.status !== '差戻し');
@@ -164,16 +173,20 @@ export default function DayTripForm({ onBack, mode = 'create', initialReport = n
         generated_report_text: generatedReport?.reportText || initialReport?.generated_report_text || '',
         generated_settlement_text: generatedReport?.settlementText || initialReport?.generated_settlement_text || '',
       };
+      // A13: 新規作成時に company_id を付与（RLS create 一致）。編集時は既存の所属を維持。
+      const payload = mode === 'edit'
+        ? { ...data, company_id: initialReport?.company_id }
+        : stampCompanyId(tenant, data);
       let saved;
       if (mode === 'edit') {
-        await base44.entities.Report.update(initialReport.id, data);
+        await base44.entities.Report.update(initialReport.id, payload);
         saved = { id: initialReport.id };
       } else {
-        saved = await base44.entities.Report.create(data);
+        saved = await base44.entities.Report.create(payload);
       }
       // 申請通知（throw しない、status 遷移を破壊しない）
       if (status === '申請中') {
-        await notifySubmitted({ report: { ...data, id: saved.id } });
+        await notifySubmitted({ report: { ...payload, id: saved.id } });
       }
       navigate(`/reports/${saved.id}`);
     } catch (e) {

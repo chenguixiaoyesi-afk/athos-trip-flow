@@ -1,4 +1,5 @@
 import { format, getYear, getMonth } from 'date-fns';
+import { deriveReportFinancials } from './reportFinancials.js';
 
 // 集計関連の純粋関数モジュール（A6 で新規導入）。
 // すべて副作用なし・browser 依存なし・テスト容易性確保。
@@ -225,6 +226,200 @@ export async function buildReportsCSVAsync(reports, options = {}) {
       try { onProgress({ done, total }); } catch { /* ignore caller errors */ }
     }
     // UI thread に制御を返す（最後の chunk 後は待機なし）
+    if (done < total) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ===========================================================================
+// A13: クロスカンパニー（全社横断）CSV ビルダー（APPEND-ONLY）
+// ---------------------------------------------------------------------------
+// systemOwner が「全社表示」で書き出す際、各行がどの会社のものか判別できるよう
+// 会社名・会社コード列を先頭に付与する。A9 で凍結された simple/audit の列・順序・
+// 値・エスケープ規則は一切変更しない（既存 getHeaders/buildRow/rowToCsvLine を再利用）。
+// 単一会社スコープ（companyAdmin/manager 等）は従来の buildReportsCSV(Async) を使う。
+// ===========================================================================
+
+/**
+ * companies 配列から company_id -> { name, code } の参照表を作る（純粋・副作用なし）。
+ * @param {Array} companies AuthContext.companies（{ id, name, code, ... }）
+ * @returns {Map<string, { name: string, code: string }>}
+ */
+function buildCompanyLookup(companies) {
+  const map = new Map();
+  for (const c of companies || []) {
+    if (c && c.id) map.set(c.id, { name: c.name || '', code: c.code || '' });
+  }
+  return map;
+}
+
+/** 全社横断時のみ先頭に付与する会社 2 列ヘッダー。 */
+const CROSS_COMPANY_HEADERS = ['会社名', '会社コード'];
+
+/**
+ * 全社横断 CSV（同期版）。会社名・会社コードを先頭 2 列に付与し、
+ * 3 列目以降は既存 getHeaders/buildRow（simple|audit）と完全一致。
+ * @param {Array} reports
+ * @param {Array} companies
+ * @param {{ format?: 'simple'|'audit' }} [options]
+ * @returns {string} CSV 文字列（BOM なし、BOM 付与は UI 層）
+ */
+export function buildCrossCompanyReportsCSV(reports, companies, options = {}) {
+  const { format: formatName = 'simple' } = options;
+  const lookup = buildCompanyLookup(companies);
+  const headers = [...CROSS_COMPANY_HEADERS, ...getHeaders(formatName)];
+  const rows = (reports || []).map(r => {
+    const co = lookup.get(r.company_id) || { name: '', code: '' };
+    return [co.name, co.code, ...buildRow(r, formatName)];
+  });
+  return [headers, ...rows].map(rowToCsvLine).join('\n');
+}
+
+/**
+ * 全社横断 CSV（大量データ対応 async + chunked 版）。buildReportsCSVAsync と同じ
+ * chunk / onProgress 契約。会社 2 列を先頭に付与する点のみが差分。
+ * @param {Array} reports
+ * @param {Array} companies
+ * @param {{ format?: 'simple'|'audit', chunkSize?: number, onProgress?: (state: {done:number,total:number}) => void }} [options]
+ * @returns {Promise<string>} CSV 文字列（BOM なし、BOM 付与は UI 層）
+ */
+export async function buildCrossCompanyReportsCSVAsync(reports, companies, options = {}) {
+  const { format: formatName = 'simple', chunkSize = 200, onProgress } = options;
+  const lookup = buildCompanyLookup(companies);
+  const total = (reports || []).length;
+  const headers = [...CROSS_COMPANY_HEADERS, ...getHeaders(formatName)];
+  const lines = [rowToCsvLine(headers)];
+
+  for (let i = 0; i < total; i += chunkSize) {
+    const chunk = reports.slice(i, i + chunkSize);
+    for (const r of chunk) {
+      const co = lookup.get(r.company_id) || { name: '', code: '' };
+      lines.push(rowToCsvLine([co.name, co.code, ...buildRow(r, formatName)]));
+    }
+    const done = Math.min(i + chunkSize, total);
+    if (onProgress) {
+      try { onProgress({ done, total }); } catch { /* ignore caller errors */ }
+    }
+    // UI thread に制御を返す（最後の chunk 後は待機なし）
+    if (done < total) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ===========================================================================
+// A12.5: グループ統合管理用の追記関数（APPEND-ONLY）
+// ---------------------------------------------------------------------------
+// 会社別集計（ダッシュボード）とグループ用レポート CSV（会社名/氏名/種別/手当/実費/総支給額）。
+// A9 凍結（getHeaders/buildRow/rowToCsvLine/buildReportsCSV(Async)）および A13 cross-company
+// 関数の列・順序・値・エスケープ規則は一切変更しない（上記は不変・本セクションは末尾追記のみ）。
+// 金額（手当/実費/総支給）は A11 deriveReportFinancials に委譲し二重計算しない。
+// ===========================================================================
+
+/**
+ * 会社別集計（純粋・副作用なし）。companies の各社について、当該 company_id の
+ * レポートを集計する。ダッシュボードの「会社別集計」セクション用。
+ * - appliedCount（申請件数）= status ∈ {申請中, 承認済, 差戻し}（下書きを除く提出済みの総数）
+ * - approvedCount（承認件数）= status === '承認済'
+ * - totalPayment（支給額）= Σ deriveReportFinancials.payment_total（= total_amount）
+ * - totalAllowance（手当額）= Σ allowance_total ／ totalExpense（実費額）= Σ expense_total
+ * @param {Array} reports
+ * @param {Array} companies AuthContext.companies（{ id, name, code, ... }）
+ * @returns {Array<{ company_id: string, company_name: string, company_code: string,
+ *                   appliedCount: number, approvedCount: number, totalPayment: number,
+ *                   totalAllowance: number, totalExpense: number, reportCount: number }>}
+ */
+export function buildCompanyBreakdown(reports, companies) {
+  const SUBMITTED = ['申請中', '承認済', '差戻し'];
+  const list = reports || [];
+  return (companies || []).map(co => {
+    const own = list.filter(r => r && r.company_id === co.id);
+    let appliedCount = 0;
+    let approvedCount = 0;
+    let totalPayment = 0;
+    let totalAllowance = 0;
+    let totalExpense = 0;
+    for (const r of own) {
+      if (SUBMITTED.includes(r.status)) appliedCount += 1;
+      if (r.status === '承認済') approvedCount += 1;
+      const fin = deriveReportFinancials(r);
+      totalPayment += fin.payment_total || 0;
+      totalAllowance += fin.allowance_total || 0;
+      totalExpense += fin.expense_total || 0;
+    }
+    return {
+      company_id: co.id,
+      company_name: co.name || '',
+      company_code: co.code || '',
+      appliedCount,
+      approvedCount,
+      totalPayment,
+      totalAllowance,
+      totalExpense,
+      reportCount: own.length,
+    };
+  });
+}
+
+/** グループ用レポート CSV のヘッダー（A12.5：会社名/氏名/レポート種別/手当/実費/総支給額）。 */
+export const GROUP_REPORT_HEADERS = ['会社名', '氏名', 'レポート種別', '手当', '実費', '総支給額'];
+
+/** 1 レポート → グループ CSV 行（会社名解決済み）。手当/実費/総支給は deriveReportFinancials 委譲。 */
+function buildGroupRow(report, lookup) {
+  const co = lookup.get(report.company_id) || { name: '', code: '' };
+  const fin = deriveReportFinancials(report);
+  return [
+    co.name,
+    report.created_by_name || '',
+    report.report_type || '',
+    fin.allowance_total,
+    fin.expense_total,
+    fin.payment_total,
+  ];
+}
+
+/**
+ * グループ用レポート CSV（同期版）。会社名/氏名/種別/手当/実費/総支給額の 6 列。
+ * 既存 buildReportsCSV(simple/audit) / buildCrossCompanyReportsCSV(A13) とは別系統の新規ビルダ。
+ * 金額は deriveReportFinancials 委譲・raw 数値（Excel 集計可能）。
+ * @param {Array} reports
+ * @param {Array} companies
+ * @returns {string} CSV 文字列（BOM なし、BOM 付与は UI 層）
+ */
+export function buildGroupReportsCSV(reports, companies) {
+  const lookup = buildCompanyLookup(companies);
+  const rows = (reports || []).map(r => buildGroupRow(r, lookup));
+  return [GROUP_REPORT_HEADERS, ...rows].map(rowToCsvLine).join('\n');
+}
+
+/**
+ * グループ用レポート CSV（大量データ対応 async + chunked 版）。buildReportsCSVAsync と同じ
+ * chunk / onProgress 契約。列は buildGroupReportsCSV と同一。
+ * @param {Array} reports
+ * @param {Array} companies
+ * @param {{ chunkSize?: number, onProgress?: (state: {done:number,total:number}) => void }} [options]
+ * @returns {Promise<string>}
+ */
+export async function buildGroupReportsCSVAsync(reports, companies, options = {}) {
+  const { chunkSize = 200, onProgress } = options;
+  const lookup = buildCompanyLookup(companies);
+  const total = (reports || []).length;
+  const lines = [rowToCsvLine(GROUP_REPORT_HEADERS)];
+
+  for (let i = 0; i < total; i += chunkSize) {
+    const chunk = reports.slice(i, i + chunkSize);
+    for (const r of chunk) {
+      lines.push(rowToCsvLine(buildGroupRow(r, lookup)));
+    }
+    const done = Math.min(i + chunkSize, total);
+    if (onProgress) {
+      try { onProgress({ done, total }); } catch { /* ignore caller errors */ }
+    }
     if (done < total) {
       await new Promise(resolve => setTimeout(resolve, 0));
     }

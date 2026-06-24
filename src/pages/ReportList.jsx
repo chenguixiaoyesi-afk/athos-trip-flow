@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { buildScopedFilter, can } from '@/lib/tenantScope';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -24,39 +25,63 @@ const TYPE_COLORS = {
 };
 
 export default function ReportList() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { user, tenant, companies } = useAuth();
+  // A13: 会社全体一覧を見られるか（reportViewAll）。member は自分のレポートのみ。
+  const isAdmin = can(tenant, 'reportViewAll');
+  // A12.5: 会社横断できる systemOwner か（全社/会社別ビューの会社セレクタ表示）。
+  const canSwitchCompany = can(tenant, 'companySwitch');
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
+  const [companyFilter, setCompanyFilter] = useState('all'); // 'all' = 全社（systemOwner の会社別ビュー）
+  const [personFilter, setPersonFilter] = useState('all');   // 'all' = 全員（admin の個人別ビュー）
 
   useEffect(() => {
     const load = async () => {
-      let data;
-      if (isAdmin) {
-        data = await base44.entities.Report.list('-created_date', 100);
-      } else {
-        data = await base44.entities.Report.filter({ created_by_id: user?.id }, '-created_date', 100);
-      }
+      // 無所属（fail-closed）は何も取得しない。本来はルートガードで遮断済み。
+      if (!tenant) { setReports([]); setLoading(false); return; }
+      // reportViewAll 保有者は自社全件（systemOwner は全社/選択会社）、member は自分の作成分のみ。
+      const scoped = isAdmin
+        ? buildScopedFilter(tenant, {})
+        : buildScopedFilter(tenant, { created_by_id: user?.id });
+      const data = await base44.entities.Report.filter(scoped, '-created_date', 100);
       setReports(data || []);
       setLoading(false);
     };
     load();
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant, user]);
+
+  // A12.5: company_id → 会社名 参照表（行バッジ・会社セレクタ表示用）
+  const companyNameById = new Map((companies || []).map(c => [c.id, c.name]));
+  // 会社別フィルタは会社横断できる systemOwner のみ有効（他ロールは自社固定）
+  const effectiveCompanyFilter = canSwitchCompany ? companyFilter : 'all';
 
   const filtered = reports.filter(r => {
     const matchStatus = statusFilter === 'all' || r.status === statusFilter;
     const matchType = typeFilter === 'all' || r.report_type === typeFilter;
-    const matchSearch = !search || 
+    const matchCompany = effectiveCompanyFilter === 'all' || r.company_id === effectiveCompanyFilter;
+    const matchPerson = personFilter === 'all' || (r.created_by_name || '') === personFilter;
+    const matchSearch = !search ||
       (r.destination_name || '').includes(search) ||
       (r.country_name || '').includes(search) ||
       (r.business_content || '').includes(search) ||
       (r.report_number || '').includes(search) ||
       (r.created_by_name || '').includes(search);
-    return matchStatus && matchType && matchSearch;
+    return matchStatus && matchType && matchCompany && matchPerson && matchSearch;
   });
+
+  // セレクタ選択肢（会社別を選ぶと担当者候補もその会社に絞る）
+  const companyOptions = Array.from(new Set(reports.map(r => r.company_id).filter(Boolean)))
+    .map(id => ({ id, name: companyNameById.get(id) || id }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  const personOptions = Array.from(new Set(
+    reports
+      .filter(r => effectiveCompanyFilter === 'all' || r.company_id === effectiveCompanyFilter)
+      .map(r => r.created_by_name).filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'ja'));
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -78,6 +103,30 @@ export default function ReportList() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input placeholder="目的地、業務内容、レポートIDで検索" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
+        {/* A12.5: 全社/会社別ビュー（会社横断できる systemOwner のみ） */}
+        {canSwitchCompany && (
+          <Select value={companyFilter} onValueChange={setCompanyFilter}>
+            <SelectTrigger className="w-full sm:w-[150px]">
+              <SelectValue placeholder="会社" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全社</SelectItem>
+              {companyOptions.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+        {/* A12.5: 個人別ビュー（会社内の全レポートを見られる admin のみ。member は自分だけなので不要） */}
+        {isAdmin && (
+          <Select value={personFilter} onValueChange={setPersonFilter}>
+            <SelectTrigger className="w-full sm:w-[150px]">
+              <SelectValue placeholder="担当者" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全員</SelectItem>
+              {personOptions.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-full sm:w-[150px]">
             <SelectValue placeholder="ステータス" />
@@ -134,6 +183,11 @@ export default function ReportList() {
                       {report.destination_name || `${report.country_name} ${report.city_name}` || '目的地未設定'}
                     </p>
                     <div className="flex items-center gap-3 mt-1">
+                      {canSwitchCompany && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 whitespace-nowrap">
+                          {companyNameById.get(report.company_id) || '—'}
+                        </span>
+                      )}
                       {isAdmin && <span className="text-xs text-muted-foreground">{report.created_by_name}</span>}
                       <span className="text-xs text-muted-foreground">
                         {report.travel_date || report.start_date || format(new Date(report.created_date), 'yyyy/MM/dd')}

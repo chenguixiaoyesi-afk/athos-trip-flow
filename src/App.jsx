@@ -16,7 +16,10 @@ import ReportDetail from '@/pages/ReportDetail';
 import ReportEdit from '@/pages/ReportEdit';
 import Approval from '@/pages/Approval';
 import Summary from '@/pages/Summary';
+import PaymentManagement from '@/pages/PaymentManagement';
 import PolicyManagement from '@/pages/PolicyManagement';
+import CompanyManagement from '@/pages/CompanyManagement';
+import { RequireCompany, RequireRole } from '@/components/RequireTenant';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -45,14 +48,28 @@ const AuthenticatedApp = () => {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/reports" element={<ReportList />} />
-          <Route path="/reports/new" element={<ReportNew />} />
-          <Route path="/reports/:id" element={<ReportDetail />} />
-          <Route path="/reports/:id/edit" element={<ReportEdit />} />
-          <Route path="/approval" element={<Approval />} />
-          <Route path="/summary" element={<Summary />} />
-          <Route path="/policy" element={<PolicyManagement />} />
+          {/* A13: 所属会社必須（fail-closed）。capability ルートは RequireRole で二重ガード。
+              最終的なテナント遮断はサーバ側 RLS（これは UX 早期 403）。 */}
+          <Route element={<RequireCompany />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/reports" element={<ReportList />} />
+            <Route path="/reports/new" element={<ReportNew />} />
+            <Route path="/reports/:id" element={<ReportDetail />} />
+            <Route path="/reports/:id/edit" element={<ReportEdit />} />
+            <Route path="/summary" element={<Summary />} />
+            <Route element={<RequireRole capability="approve" />}>
+              <Route path="/approval" element={<Approval />} />
+            </Route>
+            <Route element={<RequireRole capability="payment" />}>
+              <Route path="/payments" element={<PaymentManagement />} />
+            </Route>
+            <Route element={<RequireRole capability="policyManage" />}>
+              <Route path="/policy" element={<PolicyManagement />} />
+            </Route>
+            <Route element={<RequireRole capability="companyManage" />}>
+              <Route path="/companies" element={<CompanyManagement />} />
+            </Route>
+          </Route>
         </Route>
         <Route path="*" element={<PageNotFound />} />
       </Routes>

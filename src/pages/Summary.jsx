@@ -13,22 +13,25 @@ import {
   PieChart, Pie, Cell,
 } from 'recharts';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { aggregateMonthlySummary, formatSummaryForEmail, buildReportsCSV, buildReportsCSVAsync } from '@/lib/aggregation';
+import { aggregateMonthlySummary, formatSummaryForEmail, buildReportsCSV, buildReportsCSVAsync, buildCrossCompanyReportsCSV, buildCrossCompanyReportsCSVAsync, buildGroupReportsCSV } from '@/lib/aggregation';
 import { notifyMonthlySummary } from '@/lib/notifications';
+import { buildScopedFilter, can, budgetStorageKey } from '@/lib/tenantScope';
 
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const PIE_COLORS = ['#1a237e', '#4caf50', '#ff9800', '#e53935'];
 
 export default function Summary() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { user, tenant, effectiveCompanyId, companies, selectedCompanyId } = useAuth();
+  // A13: 「会社全体の集計を見られるか」= reportViewAll（systemOwner/companyAdmin/manager）。
+  //   member は自分の承認済のみ（§4.5 の △）。変数名は既存踏襲だが role の直読みはしない。
+  const isAdmin = can(tenant, 'reportViewAll');
+  // A13: systemOwner が「全社表示」で書き出す時のみ、会社名・会社コード列付き CSV を使う。
+  //   単一会社スコープでは従来の buildReportsCSV(Async) と完全に同一の出力を維持する。
+  const crossCompany = !!tenant?.isSystemOwner && !selectedCompanyId;
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [year, setYear] = useState(new Date().getFullYear());
-  const [annualBudget, setAnnualBudget] = useState(() => {
-    const saved = localStorage.getItem('annualBudget');
-    return saved ? Number(saved) : 0;
-  });
+  const [annualBudget, setAnnualBudget] = useState(0);
   const [showBudgetInput, setShowBudgetInput] = useState(false);
   const [budgetInput, setBudgetInput] = useState('');
   // A6: admin 手動配信ボタンの状態
@@ -46,20 +49,32 @@ export default function Summary() {
   const [auditExporting, setAuditExporting] = useState(false);
   const [auditProgress, setAuditProgress] = useState({ done: 0, total: 0 });
 
+  // 予算は会社ごとに名前空間化（§4.10）。会社切替で読み直す。
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(budgetStorageKey(tenant));
+      setAnnualBudget(saved ? Number(saved) : 0);
+    } catch { /* localStorage 不可環境では 0 のまま */ }
+  }, [tenant]);
+
   useEffect(() => {
     const load = async () => {
+      // 無所属（fail-closed）は何も取得しない。本来はルートガードで遮断済み。
+      if (!tenant) { setReports([]); setLoading(false); return; }
       setLoading(true);
-      let data;
-      if (isAdmin) {
-        data = await base44.entities.Report.filter({ status: '承認済' }, '-created_date', 500);
-      } else {
-        data = await base44.entities.Report.filter({ created_by_id: user?.id, status: '承認済' }, '-created_date', 200);
-      }
+      // 承認済のみ。reportViewAll 保有者は自社全件（systemOwner は全社/選択会社）、
+      //   member は自分の作成分のみ。company_id はサーバ RLS とフロント filter の二重実装。
+      const base = { status: '承認済' };
+      const scoped = isAdmin
+        ? buildScopedFilter(tenant, base)
+        : buildScopedFilter(tenant, { ...base, created_by_id: user?.id });
+      const data = await base44.entities.Report.filter(scoped, '-created_date', isAdmin ? 500 : 200);
       setReports(data || []);
       setLoading(false);
     };
     load();
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant, user]);
 
   const yearReports = reports.filter(r => getYear(new Date(r.created_date)) === year);
   const prevYearReports = reports.filter(r => getYear(new Date(r.created_date)) === year - 1);
@@ -114,7 +129,8 @@ export default function Summary() {
     const val = Number(budgetInput);
     if (val > 0) {
       setAnnualBudget(val);
-      localStorage.setItem('annualBudget', String(val));
+      // 会社別キーで保存（横断混在を防止）。
+      try { localStorage.setItem(budgetStorageKey(tenant), String(val)); } catch { /* noop */ }
     }
     setShowBudgetInput(false);
   };
@@ -123,11 +139,26 @@ export default function Summary() {
     // A6: 純粋関数 buildReportsCSV に CSV 組み立てを委譲。
     // browser 依存処理（BOM 付与 + Blob 化 + Download トリガ）は UI 層に残す。
     // headers / 列構造 / BOM / ファイル名形式は既存と完全等価。
-    const csv = buildReportsCSV(yearReports);
+    // A13: 全社表示時は会社列付き、それ以外は従来出力（列構造・BOM・ファイル名形式は不変）。
+    const csv = crossCompany
+      ? buildCrossCompanyReportsCSV(yearReports, companies)
+      : buildReportsCSV(yearReports);
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `旅費精算_${year}年_経理用.csv`;
+    link.download = `旅費精算_${year}年_経理用${crossCompany ? '_全社' : ''}.csv`;
+    link.click();
+  };
+
+  // A12.5: グループ用レポート CSV（会社名 / 氏名 / レポート種別 / 手当 / 実費 / 総支給額）。
+  // 既存 exportCSV（経理用）とは別系統で、グループ横断の素直な一覧出力を提供する。
+  // BOM 付与 + Blob 化 + Download トリガは exportCSV と同一の UI 層処理。
+  const exportGroupCSV = () => {
+    const csv = buildGroupReportsCSV(yearReports, companies);
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `レポート集計_${year}年${crossCompany ? '_全社' : ''}.csv`;
     link.click();
   };
 
@@ -150,6 +181,7 @@ export default function Summary() {
         month: targetMonth,
         summary: summaryBody,
         csvContent,
+        companyId: effectiveCompanyId, // A13: 集計対象会社の承認者へ
       });
       setSendResult('success');
     } catch (e) {
@@ -187,16 +219,23 @@ export default function Summary() {
         alert('該当するレポートがありません。絞り込み条件を見直してください。');
         return;
       }
-      const csv = await buildReportsCSVAsync(filtered, {
-        format: 'audit',
-        chunkSize: 200,
-        onProgress: (state) => setAuditProgress(state),
-      });
+      // A13: 全社表示時は会社列付きの横断版、それ以外は従来の監査 CSV（列構造不変）。
+      const csv = crossCompany
+        ? await buildCrossCompanyReportsCSVAsync(filtered, companies, {
+            format: 'audit',
+            chunkSize: 200,
+            onProgress: (state) => setAuditProgress(state),
+          })
+        : await buildReportsCSVAsync(filtered, {
+            format: 'audit',
+            chunkSize: 200,
+            onProgress: (state) => setAuditProgress(state),
+          });
       const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       const datePart = `${auditFilter.startDate || 'all'}_${auditFilter.endDate || 'all'}`;
-      link.download = `旅費精算_監査用_${datePart}.csv`;
+      link.download = `旅費精算_監査用_${datePart}${crossCompany ? '_全社' : ''}.csv`;
       link.click();
       setShowAuditDialog(false);
     } catch (e) {
@@ -241,6 +280,10 @@ export default function Summary() {
           </Button>
           <Button variant="outline" onClick={exportCSV} className="gap-2">
             <Download className="w-4 h-4" />CSV出力
+          </Button>
+          {/* A12.5: グループ用レポート CSV（会社名/氏名/レポート種別/手当/実費/総支給額）。経理用 CSV とは別系統。 */}
+          <Button variant="outline" onClick={exportGroupCSV} className="gap-2">
+            <Download className="w-4 h-4" />レポートCSV
           </Button>
           {isAdmin && (
             <Button

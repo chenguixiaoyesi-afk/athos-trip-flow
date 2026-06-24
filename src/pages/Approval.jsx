@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { buildScopedFilter, assertSameTenant } from '@/lib/tenantScope';
 import { notifyApproved, notifyRejected } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,7 +19,7 @@ const TYPE_COLORS = {
 };
 
 export default function Approval() {
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -27,12 +28,19 @@ export default function Approval() {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [processing, setProcessing] = useState(false);
 
+  // tenant 変化（systemOwner の会社切替含む）で再取得。
   useEffect(() => {
     loadReports();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant]);
 
   const loadReports = async () => {
-    const data = await base44.entities.Report.filter({ status: '申請中' }, '-created_date', 100);
+    // 無所属（fail-closed）は何も取得しない。本来はルートガードで遮断済み。
+    if (!tenant) { setReports([]); setLoading(false); return; }
+    // 自社の申請中のみ（systemOwner は会社未選択なら全社）。最終強制はサーバ RLS。
+    const data = await base44.entities.Report.filter(
+      buildScopedFilter(tenant, { status: '申請中' }), '-created_date', 100
+    );
     setReports(data || []);
     setLoading(false);
   };
@@ -41,10 +49,13 @@ export default function Approval() {
     setProcessing(true);
     // 通知のため、対象 report を事前確保（loadReports 後に reports state がリフレッシュされるため）
     const target = reports.find(r => r.id === reportId);
+    // 越境防止（UX 早期遮断。最終強制は RLS）。
+    if (target && !assertSameTenant(tenant, target)) { setProcessing(false); return; }
     await base44.entities.Report.update(reportId, {
       status: '承認済',
       approver_name: user?.full_name,
       approved_date: new Date().toISOString().split('T')[0],
+      payment_status: 'ready', // A12: 承認 → 支給待ち遷移（支給管理で参照）
     });
     // 承認通知（throw しない、ヘルパー内で吸収）
     if (target) {
@@ -61,6 +72,8 @@ export default function Approval() {
     // 通知のため、selected を事前に確保（loadReports / setSelected(null) の前）
     const target = selected;
     const reason = rejectionReason;
+    // 越境防止（UX 早期遮断。最終強制は RLS）。
+    if (target && !assertSameTenant(tenant, target)) { setProcessing(false); return; }
     await base44.entities.Report.update(selected.id, {
       status: '差戻し',
       rejection_reason: rejectionReason,
@@ -83,13 +96,15 @@ export default function Approval() {
   const handleBulkApprove = async () => {
     if (!confirm(`選択した${selectedIds.length}件を一括承認しますか？`)) return;
     setProcessing(true);
-    // 通知のため、対象 reports を事前確保
-    const targets = reports.filter(r => selectedIds.includes(r.id));
-    for (const id of selectedIds) {
+    // 通知のため、対象 reports を事前確保（越境行は除外＝自社のみ一括承認）
+    const targets = reports.filter(r => selectedIds.includes(r.id) && assertSameTenant(tenant, r));
+    for (const target of targets) {
+      const id = target.id;
       await base44.entities.Report.update(id, {
         status: '承認済',
         approver_name: user?.full_name,
         approved_date: new Date().toISOString().split('T')[0],
+        payment_status: 'ready', // A12: 承認 → 支給待ち遷移（支給管理で参照）
       });
     }
     // 一括承認通知（並列発火、ヘルパー内で各々失敗吸収）

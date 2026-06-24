@@ -1,21 +1,34 @@
 import { base44 } from '@/api/base44Client';
+import { resolveCompanyId } from '@/lib/tenantScope';
 
-// 通知ヘルパー集約モジュール（A5 で新規導入）。
+// 通知ヘルパー集約モジュール（A5 で新規導入 / A13 で会社スコープ化）。
 // 設計原則:
 //   - すべてのヘルパーは throw しない（呼出元の status 遷移を破壊しない）
 //   - SendEmail / User.filter の失敗は try-catch で吸収して log のみ
 //   - fire-and-forget セマンティクス（呼出元は await するが戻り値や例外を待たない）
 //   - DRY: 呼出元から base44.integrations.Core.SendEmail を直接呼ばない（必ずこのモジュール経由）
+//   - A13: 通知先は「その会社の承認者（companyAdmin / manager）」に限定。
+//          会社をまたいで管理者へ漏れないようにする（テナント分離）。
 
-// 共通: 管理者一覧の取得（失敗時は空配列を返し、呼出元の status 遷移をブロックしない）
-async function getAdminEmails() {
+// 共通: ある会社の通知先（承認者）メール一覧。company_id でサーバ絞り込み（RLS とも整合）。
+//   app_role が companyAdmin / manager の User を対象。レガシー role:'admin'（app_role 未設定）も後方互換で含む。
+//   失敗時は空配列を返し、呼出元の status 遷移をブロックしない。
+async function getCompanyApproverEmails(companyId) {
+  if (!companyId) return [];
   try {
-    const admins = await base44.entities.User.filter({ role: 'admin' });
-    return (admins || [])
+    const users = await base44.entities.User.filter({ company_id: companyId });
+    return (users || [])
+      .filter(u => {
+        const role = u?.app_role;
+        if (role === 'companyAdmin' || role === 'manager' || role === 'systemOwner') return true;
+        // 後方互換: app_role 未設定の旧 admin
+        if (!role && u?.role === 'admin') return true;
+        return false;
+      })
       .map(u => u?.email)
       .filter(email => typeof email === 'string' && email.includes('@'));
   } catch (e) {
-    console.warn('[notifications] Failed to fetch admin emails', e);
+    console.warn('[notifications] Failed to fetch company approver emails', e);
     return [];
   }
 }
@@ -37,7 +50,8 @@ async function safeSend({ to, subject, body }) {
 // 申請通知（申請者 → 全管理者）
 // 件名: [申請] RPT-XXXXXXXX 種別 - 申請者名
 export async function notifySubmitted({ report }) {
-  const adminEmails = await getAdminEmails();
+  // A13: 申請者の会社の承認者のみに通知（resolveCompanyId は表示補助フォールバック）。
+  const adminEmails = await getCompanyApproverEmails(resolveCompanyId(report));
   const subject = `[申請] ${report.report_number} ${report.report_type} - ${report.created_by_name}`;
   const body = `${report.created_by_name} さんから ${report.report_type} の申請がありました。
 
@@ -89,8 +103,9 @@ ${rejectionReason || '（理由未指定）'}
 // 件名: [月次集計] YYYY年M月 旅費精算サマリ
 // 本文: aggregation.js の formatSummaryForEmail 由来の plain text + CSV を末尾埋め込み
 // （Base44 SendEmail の添付ファイルサポート未検証のため A6 最小実装。添付化は A7+ で再検討）
-export async function notifyMonthlySummary({ year, month, summary, csvContent }) {
-  const adminEmails = await getAdminEmails();
+export async function notifyMonthlySummary({ year, month, summary, csvContent, companyId }) {
+  // A13: 集計対象会社の承認者のみに送信（呼出元 Summary が effectiveCompanyId を渡す）。
+  const adminEmails = await getCompanyApproverEmails(companyId);
   const subject = `[月次集計] ${year}年${month}月 旅費精算サマリ`;
   const body = summary || `${year}年${month}月の集計データを送信します。`;
   const bodyWithCsv = csvContent

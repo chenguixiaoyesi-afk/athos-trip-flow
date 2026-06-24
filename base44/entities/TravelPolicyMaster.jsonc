@@ -2,6 +2,10 @@
   "name": "TravelPolicyMaster",
   "type": "object",
   "properties": {
+    "company_id": {
+      "type": "string",
+      "description": "所属会社（Company.id）。会社別規程のアプリ層スコープキー。A12.5 で RLS は使用しない"
+    },
     "version": {
       "type": "string",
       "description": "\u898f\u7a0b\u30d0\u30fc\u30b8\u30e7\u30f3\uff08\u4f8b\uff1a\u7b2c4\u7248\uff09"

@@ -1,0 +1,27 @@
+{
+  "name": "Company",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "会社表示名（例：株式会社Athos）"
+    },
+    "code": {
+      "type": "string",
+      "description": "会社コード（不変・ユニーク。例：DMOTION / ATHOS / PORTHOS / ARAMIS）"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "suspended"
+      ],
+      "default": "active",
+      "description": "ステータス（active=有効 / suspended=停止。物理削除はしない）"
+    }
+  },
+  "required": [
+    "name",
+    "code"
+  ]
+}

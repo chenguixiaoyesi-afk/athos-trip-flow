@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { assertSameTenant } from '@/lib/tenantScope';
 import { notifySubmitted } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowLeft, Send, Trash2, Loader2, Clock, CheckCircle, XCircle, AlertCircle, Pencil } from 'lucide-react';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
+import { deriveReportFinancials } from '@/lib/reportFinancials';
 
 const STATUS_CONFIG = {
   '下書き': { color: 'bg-gray-100 text-gray-700', icon: Clock },
@@ -16,51 +18,28 @@ const STATUS_CONFIG = {
   '差戻し': { color: 'bg-red-100 text-red-700', icon: XCircle },
 };
 
-// 支給項目の内訳を報告書種別ごとに生成
-function buildBreakdown(report) {
-  const items = [];
-  const add = (label, amount) => {
-    if (amount && amount > 0) items.push({ label, amount });
-  };
-
-  if (report.report_type === '日帰り出張' || report.report_type === '宿泊出張') {
-    add('日当', report.daily_allowance);
-    add('宿泊費', report.accommodation_fee);
-    add(`マイカー手当（${report.driving_distance_km || 0}km）`, report.car_allowance);
-    add('高速道路料金', report.highway_fee);
-    add('駐車場料金', report.parking_fee);
-    add('タクシー料金', report.taxi_fee);
-    add('その他交通費', report.other_transport_fee);
-  } else if (report.report_type === '海外出張') {
-    add('日当（海外）', report.daily_allowance);
-    add('宿泊費（海外）', report.accommodation_fee);
-    add('航空券代', report.flight_fee);
-    add('空港までの交通費', report.airport_transport_fee);
-  } else if (report.report_type === '外出作業') {
-    add(`マイカー手当（${report.driving_distance_km || 0}km）`, report.car_allowance);
-    add('コワーキング/貸会議室', report.coworking_fee);
-    add('Wi-Fi/通信費', report.wifi_fee);
-    add('駐車場料金', report.parking_fee);
-    add('飲食代', report.meal_fee);
-    add('その他業務関連費', report.other_work_fee);
-  }
-  return items;
-}
-
 export default function ReportDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    // A13: テナント未確定（無所属など）は fail-closed で表示しない。
+    if (!tenant) {
+      setReport(null);
+      setLoading(false);
+      return;
+    }
     base44.entities.Report.filter({ id }).then(results => {
-      setReport(results?.[0] || null);
+      const found = results?.[0] || null;
+      // A13: 別テナントのレポートは「見つからない」扱い（UX 早期遮断。最終防御は RLS）。
+      setReport(found && assertSameTenant(tenant, found) ? found : null);
       setLoading(false);
     });
-  }, [id]);
+  }, [id, tenant]);
 
   const isOwner = report?.created_by_id === user?.id;
   const canEdit = isOwner && (report?.status === '下書き' || report?.status === '差戻し');
@@ -86,7 +65,8 @@ export default function ReportDetail() {
   if (!report) return <div className="p-8 text-center text-muted-foreground">レポートが見つかりません</div>;
 
   const StatusIcon = STATUS_CONFIG[report.status]?.icon || Clock;
-  const breakdown = buildBreakdown(report);
+  // A11: 支給項目内訳は reportFinancials の単一導出を利用（表示値・順序・合計は不変）。
+  const breakdown = deriveReportFinancials(report).breakdown;
 
   return (
     <div className="p-6 max-w-4xl mx-auto">

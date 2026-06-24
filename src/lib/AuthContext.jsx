@@ -1,9 +1,22 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useMemo, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { appParams } from '@/lib/app-params';
 import { createAxiosClient } from '@base44/sdk/dist/utils/axios-client';
+import { buildTenant, configureAthosCompanyId } from '@/lib/tenantScope';
 
 const AuthContext = createContext();
+
+// systemOwner の会社セレクタ選択値をリロード跨ぎで保持する localStorage キー。
+// 非 systemOwner では buildTenant が無視するため、保持していても越境にはならない（UX のみ）。
+const SELECTED_COMPANY_KEY = 'tenant:selectedCompanyId';
+
+const readStoredSelectedCompanyId = () => {
+  try {
+    return window.localStorage.getItem(SELECTED_COMPANY_KEY) || null;
+  } catch {
+    return null;
+  }
+};
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -13,6 +26,10 @@ export const AuthProvider = ({ children }) => {
   const [authError, setAuthError] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [appPublicSettings, setAppPublicSettings] = useState(null); // Contains only { id, public_settings }
+  // A13 マルチカンパニー: 会社一覧（表示/セレクタ用。Company.rls.read=true）と
+  // systemOwner の選択会社。tenant は user(company_id/app_role) + selectedCompanyId から導出。
+  const [companies, setCompanies] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState(readStoredSelectedCompanyId);
 
   useEffect(() => {
     checkAppState();
@@ -89,6 +106,22 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // 会社一覧の読込（表示名・セレクタ用）と ATHOS フォールバック id の解決。
+  // Company.rls.read=true のため全認証ユーザが参照可。失敗しても認証自体は継続（throw-safe）。
+  // 注意: ここで解決する _athosCompanyId は resolveCompanyId の「データ行表示フォールバック」専用であり、
+  //       ユーザ identity の会社決定（tenant.companyId）には一切使わない（§4.3b fail-closed）。
+  const loadCompanies = async () => {
+    try {
+      const list = await base44.entities.Company.list('-created_date', 200);
+      setCompanies(Array.isArray(list) ? list : []);
+      const athos = (list || []).find((c) => c.code === 'ATHOS');
+      configureAthosCompanyId(athos ? athos.id : null);
+    } catch (error) {
+      console.error('Company list load failed (non-fatal):', error);
+      setCompanies([]);
+    }
+  };
+
   const checkUserAuth = async () => {
     try {
       // Now check if the user is authenticated
@@ -96,6 +129,7 @@ export const AuthProvider = ({ children }) => {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
       setIsAuthenticated(true);
+      await loadCompanies();
       setIsLoadingAuth(false);
       setAuthChecked(true);
     } catch (error) {
@@ -132,10 +166,43 @@ export const AuthProvider = ({ children }) => {
     base44.auth.redirectToLogin(window.location.href);
   };
 
+  // systemOwner の会社切替。null で全社横断モードへ戻す。localStorage に保持（UX のみ）。
+  const setSelectedCompany = useCallback((companyId) => {
+    const next = companyId || null;
+    setSelectedCompanyId(next);
+    try {
+      if (next) window.localStorage.setItem(SELECTED_COMPANY_KEY, next);
+      else window.localStorage.removeItem(SELECTED_COMPANY_KEY);
+    } catch {
+      /* localStorage 不可環境では保持しないだけ（致命的ではない） */
+    }
+  }, []);
+
+  // テナント ctx。company_id 不在ユーザは null（fail-closed / §4.3b）。
+  // selectedCompanyId は systemOwner のときのみ buildTenant 内で採用される。
+  const tenant = useMemo(
+    () => buildTenant(user, selectedCompanyId),
+    [user, selectedCompanyId]
+  );
+
+  // 実効会社 id（表示用）: systemOwner は選択会社、未選択なら自社。他ロールは常に自社。
+  const effectiveCompanyId = useMemo(() => {
+    if (!tenant) return null;
+    return tenant.isSystemOwner
+      ? (tenant.selectedCompanyId || tenant.homeCompanyId)
+      : tenant.companyId;
+  }, [tenant]);
+
+  // 表示中の会社レコード（会社名表示用）。
+  const currentCompany = useMemo(
+    () => companies.find((c) => c.id === effectiveCompanyId) || null,
+    [companies, effectiveCompanyId]
+  );
+
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      isAuthenticated, 
+    <AuthContext.Provider value={{
+      user,
+      isAuthenticated,
       isLoadingAuth,
       isLoadingPublicSettings,
       authError,
@@ -144,7 +211,15 @@ export const AuthProvider = ({ children }) => {
       logout,
       navigateToLogin,
       checkUserAuth,
-      checkAppState
+      checkAppState,
+      // A13 マルチカンパニー
+      tenant,
+      companies,
+      reloadCompanies: loadCompanies,
+      selectedCompanyId,
+      setSelectedCompany,
+      effectiveCompanyId,
+      currentCompany
     }}>
       {children}
     </AuthContext.Provider>
@@ -157,4 +232,13 @@ export const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
+};
+
+/**
+ * テナント ctx 専用の薄いフック。`buildScopedFilter` / `stampCompanyId` / `can` 等に渡す。
+ * `tenant === null` は無所属（fail-closed）= 呼出側でアクセス遮断すること。
+ */
+export const useTenant = () => {
+  const { tenant, companies, selectedCompanyId, setSelectedCompany, effectiveCompanyId, currentCompany } = useAuth();
+  return { tenant, companies, selectedCompanyId, setSelectedCompany, effectiveCompanyId, currentCompany };
 };

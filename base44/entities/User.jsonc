@@ -19,6 +19,21 @@
         "\u5f93\u696d\u54e1"
       ],
       "description": "\u5f79\u8077"
+    },
+    "company_id": {
+      "type": "string",
+      "description": "\u6240\u5c5e\u4f1a\u793e\uff08Company.id\uff09\u3002\u6240\u5c5e\u306e\u6b63\u672c\u3002\u672a\u8a2d\u5b9a\u30e6\u30fc\u30b6\u30fc\u306f fail-closed\uff08\u30a2\u30af\u30bb\u30b9\u62d2\u5426\uff09"
+    },
+    "app_role": {
+      "type": "string",
+      "enum": [
+        "systemOwner",
+        "companyAdmin",
+        "manager",
+        "member"
+      ],
+      "default": "member",
+      "description": "\u6a29\u9650\u30ed\u30fc\u30eb\u306e\u6b63\u672c\u3002systemOwner \u306e\u307f\u5168\u793e\u6a2a\u65ad\u53ef\u3002\u30ec\u30ac\u30b7\u30fc role \u306f\u5f8c\u65b9\u4e92\u63db\u306e\u8868\u793a\u7528\u306e\u307f"
     }
   }
 }
